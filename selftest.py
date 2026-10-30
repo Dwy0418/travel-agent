@@ -747,6 +747,22 @@ def test_config_secrets() -> None:
     finally:
         os.environ.pop(probe, None)
 
+    # CLI / 评测环境没有 streamlit、也没有 secrets.toml 时，必须判定为"不在 Streamlit 里"，
+    # 否则会为了取一个空 Secrets 白导入 streamlit。selftest 里前面的 AppTest 用例已经把
+    # streamlit 载入 sys.modules，这里临时摘掉再还原，模拟真实的脚本环境。
+    secrets_files = (
+        Path.home() / ".streamlit" / "secrets.toml",
+        config.BASE_DIR / ".streamlit" / "secrets.toml",
+    )
+    st_module = sys.modules.pop("streamlit", None)
+    try:
+        if not any(p.exists() for p in secrets_files):
+            check("配置：非 Streamlit 环境不判定为线上", config._under_streamlit() is False)
+            check("配置：非 Streamlit 环境返回值恒为空串", config._from_streamlit_secrets("AMAP_KEY") == "")
+    finally:
+        if st_module is not None:
+            sys.modules["streamlit"] = st_module
+
 
 def main() -> int:
     install_fakes()

@@ -17,20 +17,34 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _under_streamlit() -> bool:
+    """当前是否真的跑在 Streamlit 进程里。
+
+    两种情况都要算：streamlit 已被主程序导入（app.py 必然如此），
+    或 secrets.toml 已经落盘（本地手动放 secrets 时）。这样 CLI / evaluate /
+    selftest 在没有 streamlit 的环境下依然零额外开销、零报错。
+    """
+    import sys
+
+    if "streamlit" in sys.modules:
+        return True
+    candidates = (
+        Path.home() / ".streamlit" / "secrets.toml",
+        BASE_DIR / ".streamlit" / "secrets.toml",
+    )
+    return any(path.exists() for path in candidates)
+
+
 def _from_streamlit_secrets(name: str) -> str:
     """线上兜底：Streamlit Community Cloud 把密钥放在 Secrets 面板（落盘成 secrets.toml）。
 
-    没有 secrets 文件时直接返回空串，且不导入 streamlit —— 保证 cli / evaluate / selftest
-    在没有 streamlit 或没有 Secrets 的环境下零额外开销、零报错。
+    不硬编码 secrets.toml 的绝对位置（Cloud 各版本挂载路径会变），
+    只要在 Streamlit 里运行就直接问 ``st.secrets``，取不到再安静降级为空串。
     """
+    if not _under_streamlit():
+        return ""
     try:
-        candidates = (
-            Path.home() / ".streamlit" / "secrets.toml",
-            BASE_DIR / ".streamlit" / "secrets.toml",
-        )
-        if not any(path.exists() for path in candidates):
-            return ""
-        import streamlit as st  # 延迟导入：只有确认存在 secrets 文件才加载
+        import streamlit as st
 
         return str(st.secrets.get(name, "")).strip()
     except Exception:  # noqa: BLE001 - Secrets 缺失/格式错误时安静降级，由界面提示缺 Key
