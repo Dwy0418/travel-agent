@@ -517,6 +517,11 @@ def test_agent_self_correction() -> None:
         all("本轮命中缓存" in line for line in cache_lines),
         "；".join(cache_lines)[:120],
     )
+    check(
+        "Agent：执行过程不展示校验建议原文（完整建议仍回灌给模型）",
+        all("室内候选不够时" not in entry["line"] for entry in result["trace"]),
+        "；".join(entry["line"] for entry in result["trace"] if "室内候选不够时" in entry["line"])[:120],
+    )
 
 
 def test_zh_labels() -> None:
@@ -579,6 +584,22 @@ def test_zh_labels() -> None:
         ),
         zh_labels.describe_technical({"kind": "tool_call", "tool": "plan_route", "args": {}}),
     )
+    long_issue = (
+        "第1天（2026-11-01）安排了户外景点「雁南飞茶田」，但当天降水概率 70%，户外景点不适宜，"
+        "请换到晴天或改成室内景点（室内候选不够时，先用「地点检索」搜「博物馆」「美术馆」「展览馆」"
+        "「科技馆」「商场」等关键词补充；不要靠重复同一两个室内景点凑数）"
+    )
+    short = zh_labels.short_issue(long_issue)
+    check(
+        "显示层：校验问题只显示结论（去长建议、保日期、超长截断）",
+        "室内候选不够" not in short
+        and "2026-11-01" in short
+        and len(short) <= zh_labels.ISSUE_TEXT_LIMIT + 2
+        and short.endswith("……"),
+        short,
+    )
+    brief = "「雁南飞茶田」在行程中出现 2 次（第1天、第2天），请删除重复项"
+    check("显示层：短问题原样显示", zh_labels.short_issue(brief) == brief, zh_labels.short_issue(brief))
 
 
 

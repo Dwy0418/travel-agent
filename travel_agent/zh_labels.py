@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: 页面标题（浏览器标签页）
@@ -122,6 +123,28 @@ def status(value: Any) -> str:
 
 def tool_name(value: Any) -> str:
     return TOOL_LABELS.get(_clean(value), "工具")
+
+
+#: 校验问题在「执行过程」里的显示长度（完整文本仍会回灌给模型、仍进未解决列表）
+ISSUE_TEXT_LIMIT = 56
+
+
+def short_issue(text: Any, limit: int = ISSUE_TEXT_LIMIT) -> str:
+    """校验问题只显示结论：去掉结尾那段长长的操作建议，过长再按标点截断。
+
+    例如「第1天安排了户外景点「雁南飞茶田」，但当天降水概率 70%，
+    户外景点不适宜，请换到晴天或改成室内景点（室内候选不够时，先用…补数）」
+    显示为「第1天安排了户外景点「雁南飞茶田」，但当天降水概率 70%，户外景点不适宜……」。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    trimmed = re.sub(r"[（(][^（）()]{12,}[）)]\s*$", "", raw).strip()
+    if len(trimmed) > limit:
+        cut = max(trimmed.rfind(mark, 0, limit) for mark in "，；、,;")
+        trimmed = trimmed[:cut] if cut >= limit // 2 else trimmed[:limit].rstrip("，、；,;：: ")
+        trimmed += "……"
+    return trimmed or raw
 
 
 def round_label(round_no: Any) -> str:

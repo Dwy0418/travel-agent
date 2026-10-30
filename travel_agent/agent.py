@@ -659,8 +659,13 @@ class TravelAgent:
             if issues:
                 self._flush_cache_summary()
                 self._trace(f"{self._rp()}校验结果：发现 {len(issues)} 个问题，需要重排", "validation")
-                for idx, issue in enumerate(issues, 1):
-                    self._trace(f"{self._rp()}问题 {idx}：{issue}", "issue")
+                for idx, issue in enumerate(issues[:5], 1):
+                    self._trace(f"{self._rp()}问题 {idx}：{zh_labels.short_issue(issue)}", "issue", detail=issue)
+                if len(issues) > 5:
+                    self._trace(
+                        f"{self._rp()}另有 {len(issues) - 5} 个问题，已一并反馈给模型",
+                        "issue",
+                    )
                 signature = tuple(sorted(issues))
                 if signature == issue_signature:
                     same_streak += 1
