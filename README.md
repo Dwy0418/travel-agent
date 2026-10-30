@@ -76,7 +76,8 @@ Streamlit Cloud 只能部署 **GitHub 仓库**里的代码，所以先把本项�
 # 或手动：git init -b main; git add -A; git commit -m "部署"; git push -u origin main
 ```
 
-然后到 <https://share.streamlit.io> → **Create app** → 仓库选 `<你>/travel-agent`、
+代码已推送到 **<https://github.com/Dwy0418/travel-agent>**（`main` 分支），
+再打开 <https://share.streamlit.io> → **Create app** → 仓库选 `Dwy0418/travel-agent`、
 分支 `main`、主文件 `app.py` → 在 **Settings → Secrets** 粘贴：
 
 ```toml
