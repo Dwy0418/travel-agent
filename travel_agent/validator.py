@@ -185,7 +185,7 @@ def validate(
             name = item.get("name") or "未命名项"
             start, end = parse_hm(item.get("start")), parse_hm(item.get("end"))
             if start is None or end is None:
-                issues.append(f"{label}「{name}」的时间不是 HH:MM 格式，请修正")
+                issues.append(f"{label}「{name}」的时间不是「时:分」格式，请修正")
                 continue
             if end <= start:
                 issues.append(
@@ -201,7 +201,7 @@ def validate(
         for item in attractions:
             if item.get("lng") is None or item.get("lat") is None:
                 issues.append(
-                    f"{label}「{item.get('name')}」缺少经纬度，请用 search_poi 返回的真实坐标补全，禁止编造"
+                    f"{label}「{item.get('name')}」缺少经纬度，请用「地点检索」返回的真实坐标补全，禁止编造"
                 )
 
         # 天气校验
@@ -211,7 +211,7 @@ def validate(
                 issues.append(
                     f"{label}（{current}）安排了户外景点「{item.get('name')}」，但当天降水概率 "
                     f"{rain}%，户外景点不适宜，请换到晴天或改成室内景点"
-                    f"（室内候选不够时，先用 search_poi 搜「博物馆」「美术馆」「展览馆」「科技馆」"
+                    f"（室内候选不够时，先用「地点检索」搜「博物馆」「美术馆」「展览馆」「科技馆」"
                     f"「商场」等关键词补充；不要靠重复同一两个室内景点凑数）"
                 )
 
@@ -262,20 +262,20 @@ def validate(
             if worst:
                 per_item = target_dwell / max(1, len(attractions))
                 advice = (
-                    f"请把游览总时长从当前 {dwell / 60:.2f}h（{dwell:.0f} 分钟）压到 "
-                    f"≤ {target_dwell / 60:.2f}h（{target_dwell:.0f} 分钟）以内"
-                    f"（交通+午休已占 {transport_min / 60 + config.LUNCH_MINUTES / 60:.2f}h，"
-                    f"游览上限 {dwell_cap / 60:.0f}h）；"
+                    f"请把游览总时长从当前 {dwell / 60:.2f} 小时（{dwell:.0f} 分钟）压到 "
+                    f"≤ {target_dwell / 60:.2f} 小时（{target_dwell:.0f} 分钟）以内"
+                    f"（交通 + 午休已占 {transport_min / 60 + config.LUNCH_MINUTES / 60:.2f} 小时，"
+                    f"游览上限 {dwell_cap / 60:.0f} 小时）；"
                     f"即 {len(attractions)} 个景点平均每个不超过 {per_item:.0f} 分钟——"
-                    f"只调顺序或换交通方式无效，必须真的改小每个景点的 start/end 跨度"
+                    f"只调顺序或换交通方式无效，必须真的改小每个景点的起止时间跨度"
                 )
                 if gap >= 30:
                     advice += f"；若压缩后仍排不下，就删掉最远的「{worst[1]}」，当天只保留 2 个景点"
             else:
                 advice = "请减少景点"
             issues.append(
-                f"{label}总耗时约 {total_min / 60:.2f} 小时（游览 {dwell / 60:.2f}h + 交通 "
-                f"{transport_min / 60:.2f}h + 午休 1h），超过当日可用 {config.DAILY_HOURS:.0f} 小时；"
+                f"{label}总耗时约 {total_min / 60:.2f} 小时（游览 {dwell / 60:.2f} 小时 + 交通 "
+                f"{transport_min / 60:.2f} 小时 + 午休 1 小时），超过当日可用 {config.DAILY_HOURS:.0f} 小时；"
                 f"{detail}超出 {gap:.0f} 分钟，{advice}"
             )
 
@@ -318,9 +318,9 @@ def validate(
             if walk > config.ELDER_WALK_KM_LIMIT:
                 issues.append(
                     f"{label}步行距离约 {walk:.1f} 公里，同行有{who}，单日步行不要超过 "
-                    f"{config.ELDER_WALK_KM_LIMIT:.0f} 公里。注意 walk_km 指景区内部的步行距离"
-                    f"（单个景点通常 0.5-2 公里），不是景点之间的路程（那属于 transport）；"
-                    f"请把各景点的 walk_km 改成园内实际步行量，并去掉步行量大的景点"
+                    f"{config.ELDER_WALK_KM_LIMIT:.0f} 公里。注意「园内步行距离」指景区内部的步行距离"
+                    f"（单个景点通常 0.5-2 公里），不是景点之间的路程（景点间路程属于「交通方式」）；"
+                    f"请把各景点的园内步行距离改成实际值，并去掉步行量大的景点"
                 )
 
         for item in attractions:

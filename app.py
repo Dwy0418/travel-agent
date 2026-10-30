@@ -1,64 +1,80 @@
-"""Streamlit 界面：填约束 -> 实时 Trace -> 结构化行程 -> 指标与 Markdown 导出。
+"""Streamlit 界面：填约束 -> 执行过程 -> 结构化行程 -> 指标与行程单下载。
 
 运行：streamlit run app.py
+
+只负责显示：所有中英文对照来自 travel_agent.zh_labels，
+原始参数 / 坐标 / 毫秒耗时写后台日志（logs/trace-detail.log），不上屏。
 """
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-from travel_agent import agent, config
+from travel_agent import agent, config, zh_labels
 
-st.set_page_config(page_title="国内旅行规划 Agent", page_icon="🧭", layout="wide")
+st.set_page_config(page_title=zh_labels.PAGE_TITLE, page_icon="🧭", layout="wide")
 
-STATUS_TEXT = {"ok": "✅ 校验通过", "max_iterations": "⚠️ 达到迭代上限（仍有问题）", "failed": "❌ 规划失败"}
-
-
-def render_trace(entries: list[dict[str, Any]]) -> None:
-    for entry in entries:
-        kind = entry.get("kind")
-        if kind == "issue":
-            st.warning(entry["line"])
-        elif kind == "validation" and "全部通过" in entry["line"]:
-            st.success(entry["line"])
-        elif kind in ("tool_call", "tool_result"):
-            st.caption(f"🛠️ {entry['line']}")
-        else:
-            st.write(entry["line"])
+KEY_LIMIT = zh_labels.KEY_TRACE_LIMIT
 
 
-def plan_rows(itinerary: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = []
-    for index, day in enumerate(itinerary.get("days") or []):
-        for item in day.get("items") or []:
-            rows.append(
-                {
-                    "天": day.get("day") or index + 1,
-                    "日期": day.get("date", ""),
-                    "时间": f"{item.get('start', '')}-{item.get('end', '')}",
-                    "类型": item.get("type", ""),
-                    "安排": item.get("name", ""),
-                    "交通": item.get("transport", ""),
-                    "花费(元)": item.get("cost", 0),
-                    "营业时间": item.get("open_time", ""),
-                    "备注": item.get("note", ""),
-                }
-            )
-    return rows
+def setup_detail_log() -> None:
+    """技术明细写入后台日志文件；写不了就静默降级，不影响页面。"""
+    logger = logging.getLogger("travel_agent.detail")
+    if logger.handlers:
+        return
+    try:
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        handler = logging.FileHandler(log_dir / "trace-detail.log", encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    except OSError:
+        logger.addHandler(logging.NullHandler())
+
+
+def key_trace_lines(entries: list[dict[str, Any]]) -> list[str]:
+    return [str(entry["line"]) for entry in entries if zh_labels.is_key_trace(entry) and entry.get("line")]
+
+
+def tech_trace_lines(entries: list[dict[str, Any]]) -> list[str]:
+    return [zh_labels.describe_technical(entry) for entry in entries if zh_labels.is_tech_trace(entry)]
+
+
+def render_key_trace(entries: list[dict[str, Any]], *, expanded: bool = False) -> None:
+    """默认只展开关键节点；技术明细收进二级折叠区。"""
+    lines = key_trace_lines(entries)
+    shown = lines[-KEY_LIMIT:]
+    with st.expander(f"执行过程（关键节点 {len(lines)} 条）", expanded=expanded):
+        st.code("\n".join(shown) or "暂无记录", language="text")
+        if len(lines) > len(shown):
+            st.caption(f"仅显示最近 {len(shown)} 条；完整记录见「下载行程单」。")
+        with st.expander("技术明细（每次工具调用的参数与耗时）", expanded=False):
+            tech = tech_trace_lines(entries)
+            st.code("\n".join(tech[-60:]) or "暂无记录", language="text")
+
 
 
 def show_result(result: dict[str, Any]) -> None:
     c = result["constraints"]
     budget = result["budget"]
-    cols = st.columns(5)
-    cols[0].metric("状态", STATUS_TEXT.get(result["status"], result["status"]))
-    cols[1].metric("迭代次数", result["iterations"])
-    cols[2].metric("工具调用", result["tool_calls"])
-    cols[3].metric("总预算(元)", budget.get("total", 0), delta=f"上限 {c['budget']:.0f}")
-    cols[4].metric("耗时(s)", result["elapsed"])
+
+    cols = st.columns(3)
+    cols[0].metric("状态", zh_labels.status(result["status"]))
+    cols[1].metric("总预算（元）", budget.get("total", 0), delta=f"上限 {c['budget']:.0f}")
+    cols[2].metric("耗时（秒）", result["elapsed"])
+
+    with st.expander("执行详情", expanded=False):
+        detail_cols = st.columns(3)
+        detail_cols[0].metric("迭代次数", result["iterations"])
+        detail_cols[1].metric("工具调用", result["tool_calls"])
+        detail_cols[2].metric("缓存命中", result.get("cache_hits", 0))
 
     if result["issues"]:
         with st.expander(f"未解决的校验问题（{len(result['issues'])} 条）", expanded=True):
@@ -69,14 +85,13 @@ def show_result(result: dict[str, Any]) -> None:
     st.subheader(f"{itinerary.get('city') or c['city']} · {c['days']} 天行程")
     if itinerary.get("summary"):
         st.info(itinerary["summary"])
-    st.dataframe(plan_rows(itinerary), width="stretch", hide_index=True)
+    st.dataframe(zh_labels.plan_rows(itinerary), width="stretch", hide_index=True)
 
     left, right = st.columns(2)
     with left:
         st.subheader("预算明细")
-        breakdown = budget.get("breakdown") or {}
         st.dataframe(
-            [{"项目": k, "金额(元)": v} for k, v in breakdown.items()],
+            zh_labels.budget_rows(budget.get("breakdown") or {}),
             width="stretch",
             hide_index=True,
         )
@@ -85,33 +100,31 @@ def show_result(result: dict[str, Any]) -> None:
         for tip in itinerary.get("tips") or []:
             st.write(f"- {tip}")
 
-    with st.expander("结构化 JSON（可直接入库/二次开发）", expanded=False):
-        st.code(json.dumps(itinerary, ensure_ascii=False, indent=2), language="json")
-
     st.download_button(
-        "⬇️ 导出 Markdown 行程单",
+        "⬇️ 下载行程单",
         data=result["markdown"],
         file_name=f"{c['city']}-{c['days']}天行程单.md",
         mime="text/markdown",
         width="stretch",
     )
-    with st.expander("Markdown 预览", expanded=False):
+    with st.expander("行程单预览", expanded=False):
         st.markdown(result["markdown"])
-    with st.expander("执行 Trace（按类型高亮）", expanded=False):
-        render_trace(result["trace"])
+    with st.expander("结构化数据（供二次开发）", expanded=False):
+        st.code(json.dumps(itinerary, ensure_ascii=False, indent=2), language="json")
+    render_key_trace(result["trace"])
 
 
 def main() -> None:
-    st.title("🧭 国内旅行规划 Agent（自校验 + 自动重排）")
-    st.caption("DeepSeek 决策 · 高德地图取数与路径 · Open-Meteo 天气 · 预算与耗时全部由代码计算 · 校验不过自动重排")
+    setup_detail_log()
+    st.title(zh_labels.APP_TITLE)
+    st.caption(zh_labels.APP_CAPTION)
 
     missing = config.require_keys()
     if missing:
         st.warning(
-            "缺少环境变量：" + "、".join(missing) + "。"
-            "本地运行请复制 .env.example 为 .env 并填写后重启；"
-            "线上（Streamlit Community Cloud）请到 App 右上角 Settings → Secrets，"
-            "按 .streamlit/secrets.toml.example 的格式粘贴后点 Save。"
+            "缺少密钥：" + "、".join(zh_labels.key_label(name) for name in missing) + "。"
+            "本地运行请把 .env.example 复制为 .env 并填写对应变量后重启；"
+            "线上部署请打开右上角「设置 → 密钥」，按示例格式粘贴后点保存。"
         )
 
     with st.sidebar:
@@ -139,29 +152,32 @@ def main() -> None:
 
     if run_clicked:
         st.session_state.pop("result", None)
-        st.subheader("执行 Trace")
-        lines: list[str] = []
+        st.subheader("执行过程")
+        entries: list[dict[str, Any]] = []
         log_slot = st.empty()
 
         def on_trace(entry: dict[str, Any]) -> None:
-            lines.append(entry["line"])
-            log_slot.code("\n".join(lines[-120:]), language="text")
+            if not zh_labels.is_key_trace(entry):
+                return
+            entries.append(entry)
+            visible = [str(item["line"]) for item in entries[-KEY_LIMIT:]]
+            log_slot.code("\n".join(visible) or "正在准备……", language="text")
 
         try:
-            with st.spinner("Agent 正在规划并自我校验……"):
+            with st.spinner("正在规划并自我校验……"):
                 engine = agent.TravelAgent(trace_callback=on_trace)
                 st.session_state["result"] = engine.run(request, payload)
         except agent.AgentError as exc:
-            st.error(f"规划失败：{exc}")
-        except Exception as exc:  # noqa: BLE001 - 界面层兜底，避免白屏
-            st.error(f"未预期的错误：{type(exc).__name__}: {exc}")
+            st.error(f"规划失败：{zh_labels.friendly_error(exc)}")
+        except Exception:  # noqa: BLE001 - 界面层兜底，避免白屏
+            st.error("出现未预期的问题，请稍后重试；若反复出现，请查看后台日志。")
 
     result = st.session_state.get("result")
     if result:
         st.divider()
         show_result(result)
     elif not run_clicked:
-        st.info("在左侧填写约束后点击「开始规划」。Agent 会先查工具数据，再用代码校验 6 条硬性规则，不通过就自动重排。")
+        st.info("在左侧填写约束后点击「开始规划」。系统会先查真实数据，再用代码校验 6 条硬性规则，不通过就自动重排。")
 
 
 if __name__ == "__main__":

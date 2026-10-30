@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import time
 from datetime import date, timedelta
 from typing import Any, Callable
 
-from . import config, llm, schemas, tools, validator
+from . import config, llm, schemas, tools, validator, zh_labels
+
+#: 技术明细（原始参数、坐标、耗时）只进后台日志文件，不上屏。
+_detail_logger = logging.getLogger("travel_agent.detail")
 
 SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规则：
 1. 所有事实数据（景点、天气、路程、价格）必须调用工具获取，禁止编造任何信息。
@@ -140,7 +144,7 @@ class TravelAgent:
     # 状态 / Trace
     # ------------------------------------------------------------------ #
     def _rp(self) -> str:
-        return f"[第{self.round_no}轮]" if self.round_no else "[准备]"
+        return zh_labels.round_label(self.round_no)
 
     def _trace(self, line: str, kind: str = "info", **extra: Any) -> None:
         entry = {"round": self.round_no, "kind": kind, "line": line, **extra}
@@ -151,12 +155,72 @@ class TravelAgent:
             except Exception:  # noqa: BLE001 - 回调异常不影响主流程
                 pass
 
+    def _flush_cache_summary(self) -> None:
+        """缓存命中不逐条刷屏，每轮汇总一句。"""
+        pending = int(self.state.pop("cache_hits_pending", 0) or 0)
+        if pending:
+            self._trace(
+                f"{self._rp()}本轮命中缓存 {pending} 次，节省 {pending} 次接口调用",
+                "cache",
+                cache_hits=pending,
+            )
+
+    @staticmethod
+    def _log_detail(kind: str, payload: dict[str, Any]) -> None:
+        """原始参数 / 坐标 / 毫秒耗时写后台日志（页面看不到）。"""
+        if _detail_logger.handlers or _detail_logger.propagate:
+            try:
+                _detail_logger.info("%s %s", kind, json.dumps(payload, ensure_ascii=False, default=str))
+            except Exception:  # noqa: BLE001 - 日志失败不影响主流程
+                pass
+
+    def _remember_places(self, result: dict[str, Any]) -> None:
+        """记住坐标 -> 名称，日志里才能写「A → B」而不是一串经纬度。"""
+        if not result.get("success"):
+            return
+        names: dict[tuple[float, float], str] = self.state.setdefault("place_names", {})
+        points = [result] if result.get("name") and result.get("lng") is not None else []
+        points += [poi for poi in (result.get("pois") or []) if poi.get("name")]
+        for point in points:
+            try:
+                key = (round(float(point["lng"]), 4), round(float(point["lat"]), 4))
+            except (KeyError, TypeError, ValueError):
+                continue
+            names[key] = str(point["name"])
+
+    def _place_name(self, lng: Any, lat: Any) -> str:
+        try:
+            key = (round(float(lng), 4), round(float(lat), 4))
+        except (TypeError, ValueError):
+            return ""
+        name = (self.state.get("place_names") or {}).get(key)
+        if name:
+            return str(name)
+        # 兜底：校验阶段查路时，坐标来自模型已排好的行程草稿
+        for day in (self.state.get("itinerary_draft") or {}).get("days") or []:
+            for item in day.get("items") or []:
+                try:
+                    if (round(float(item.get("lng")), 4), round(float(item.get("lat")), 4)) == key:
+                        return str(item.get("name") or "")
+                except (TypeError, ValueError):
+                    continue
+        return ""
+
+
     # ------------------------------------------------------------------ #
     # 工具执行（参数校验 + 缓存 + Trace）
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _display_args(args: dict[str, Any]) -> str:
-        return ", ".join(f"{k}={v}" for k, v in args.items())
+    def _city(self) -> str:
+        return str((self.state.get("user_constraints") or {}).get("city") or "")
+
+    def _describe_call(self, name: str, args: dict[str, Any]) -> str:
+        return zh_labels.describe_tool_call(
+            name,
+            args,
+            city=self._city(),
+            origin=self._place_name(args.get("origin_lng"), args.get("origin_lat")),
+            dest=self._place_name(args.get("dest_lng"), args.get("dest_lat")),
+        )
 
     def _execute(self, name: str, raw_args: Any, source: str = "model") -> dict[str, Any]:
         if isinstance(raw_args, str):
@@ -164,7 +228,13 @@ class TravelAgent:
                 raw_args = json.loads(raw_args or "{}")
             except json.JSONDecodeError as exc:
                 result = {"success": False, "error": f"参数不是合法 JSON：{exc}"}
-                self._trace(f"{self._rp()} 参数错误：{name} 的 arguments 不是合法 JSON", "tool_call", args_ok=False)
+                self._trace(
+                    f"{self._rp()}参数格式有误，已跳过这次工具调用",
+                    "tool_call",
+                    tool=name,
+                    args_ok=False,
+                    detail=str(exc),
+                )
                 return result
         if not isinstance(raw_args, dict):
             raw_args = {}
@@ -172,24 +242,50 @@ class TravelAgent:
         if valid is None:
             result = {"success": False, "error": err or "参数非法"}
             self._trace(
-                f"{self._rp()} 参数校验不通过：{name}({self._display_args(raw_args)}) → {err}",
+                f"{self._rp()}参数不符合要求，已跳过这次工具调用",
                 "tool_call",
+                tool=name,
                 args_ok=False,
+                detail=str(err),
             )
+            self._log_detail("tool_call_invalid", {"tool": name, "args": raw_args, "error": err})
             return result
 
         cache: dict[str, Any] = self.state.setdefault("tool_results_cache", {})
         cache_key = f"{name}:{json.dumps(valid, sort_keys=True, ensure_ascii=False)}"
         if name != "estimate_budget" and cache_key in cache:
-            self._trace(f"{self._rp()} 命中缓存：{name}({self._display_args(valid)})", "tool_result", args_ok=True)
+            # 缓存命中不逐条打印，每轮汇总一句（见 _flush_cache_summary）
+            self.state["cache_hits"] = self.state.get("cache_hits", 0) + 1
+            self.state["cache_hits_pending"] = self.state.get("cache_hits_pending", 0) + 1
+            self._log_detail("cache_hit", {"tool": name, "args": valid})
             return cache[cache_key]
 
-        self._trace(f"{self._rp()} 调用工具：{name}({self._display_args(valid)})", "tool_call", args_ok=True)
+        self._trace(
+            f"{self._rp()}{self._describe_call(name, valid)}",
+            "tool_call",
+            tool=name,
+            args=valid,
+            args_ok=True,
+        )
+        self._log_detail("tool_call", {"tool": name, "args": valid, "source": source})
+        started = time.time()
         result = tools.execute_tool(name, valid, draft=self.state.get("itinerary_draft"))
+        elapsed_ms = int((time.time() - started) * 1000)
         if name != "estimate_budget":
             cache[cache_key] = result
         self.state["tool_call_count"] = self.state.get("tool_call_count", 0) + 1
-        self._trace(f"{self._rp()} 工具返回：{self._summarize(name, result)}", "tool_result", args_ok=result.get("success", False))
+        self._remember_places(result)
+        self._trace(
+            f"{self._rp()}{zh_labels.describe_tool_result(name, result)}",
+            "tool_result",
+            tool=name,
+            args_ok=result.get("success", False),
+            elapsed_ms=elapsed_ms,
+        )
+        self._log_detail(
+            "tool_result",
+            {"tool": name, "args": valid, "elapsed_ms": elapsed_ms, "result": result},
+        )
         return result
 
     def _validate_router(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -284,27 +380,8 @@ class TravelAgent:
 
     @staticmethod
     def _summarize(name: str, result: dict[str, Any]) -> str:
-        if not result.get("success"):
-            return f"失败：{result.get('error') or '未知错误'}"
-        if name == "geocode":
-            return f"{result.get('name')} → {result.get('lng')},{result.get('lat')}（{result.get('city')}）"
-        if name == "search_poi":
-            names = [poi.get("name") for poi in (result.get("pois") or [])[:4]]
-            return f"{result.get('count')} 条：{'、'.join(str(n) for n in names)}"
-        if name == "get_weather":
-            parts = [
-                f"{d.get('date')} 降水{d.get('rain_prob')}% {'雨' if d.get('is_rainy') else '晴/多云'}"
-                for d in (result.get("days") or [])
-            ]
-            return "；".join(parts)
-        if name == "plan_route":
-            return (
-                f"{result.get('distance_m', 0) / 1000:.1f} km / {result.get('duration_sec', 0) / 60:.0f} 分钟 / "
-                f"{result.get('cost_yuan', 0)} 元{'（估算）' if result.get('estimated') else ''}"
-            )
-        if name == "estimate_budget":
-            return f"总预算 {result.get('total')} 元 {result.get('breakdown')}"
-        return json.dumps(result, ensure_ascii=False)[:120]
+        """工具返回的一句话结论（人话版，不含坐标；兼容旧调用）。"""
+        return zh_labels.describe_tool_result(name, result)
 
     # ------------------------------------------------------------------ #
     # 提示词组装
@@ -352,7 +429,7 @@ class TravelAgent:
             self.state["usage"] = usage
             if usage.get("finish_reason") == "length":
                 self.state["truncated"] = True
-                self._trace(f"{self._rp()} 输出触达长度上限被截断，将要求模型精简后重发", "truncated")
+                self._trace(f"{self._rp()}输出触达长度上限被截断，将要求模型精简后重发", "truncated")
         return message
 
     # ------------------------------------------------------------------ #
@@ -365,10 +442,14 @@ class TravelAgent:
             c["lng"], c["lat"] = result["lng"], result["lat"]
             c["city_full"] = result.get("city") or c["city"]
             self._trace(
-                f"[准备] 城市中心坐标：{c['city_full']} lng={c['lng']}, lat={c['lat']}（GCJ-02）", "prepare"
+                f"{self._rp()}城市定位完成：{c['city_full']}（用于天气与路程计算）",
+                "prepare",
+                detail="坐标已记录到后台日志",
             )
+            self._log_detail("city_center", {"city": c["city_full"], "lng": c["lng"], "lat": c["lat"]})
         else:
-            self._trace(f"[准备] 城市坐标解析失败（{result.get('error')}），天气校验将跳过", "prepare")
+            self._trace(f"{self._rp()}城市定位失败，天气校验将跳过", "prepare")
+            self._log_detail("city_center_failed", {"city": c["city"], "error": result.get("error")})
 
     # ------------------------------------------------------------------ #
     # 代码侧预取：进模型前把天气与景点候选查好（省掉 1-2 轮纯取数往返）
@@ -383,7 +464,7 @@ class TravelAgent:
         for name, raw in tasks:
             valid, err = schemas.validate_args(name, raw)
             if valid is None:
-                self._trace(f"[准备] 预取参数非法：{name} → {err}", "tool_call", args_ok=False)
+                self._trace(f"{self._rp()}预取参数不符合要求，已跳过", "tool_call", tool=name, args_ok=False)
                 continue
             key = f"{name}:{json.dumps(valid, sort_keys=True, ensure_ascii=False)}"
             prepared.append((name, valid, key))
@@ -402,12 +483,21 @@ class TravelAgent:
                     result = {"success": False, "error": f"预取失败：{exc}"}
                 cache[key] = result
                 self.state["tool_call_count"] = self.state.get("tool_call_count", 0) + 1
-                self._trace(f"[准备] 预取工具：{name}({self._display_args(valid)})", "tool_call", args_ok=True)
+                self._remember_places(result)
                 self._trace(
-                    f"[准备] 预取返回：{self._summarize(name, result)}",
+                    f"{self._rp()}预取：{self._describe_call(name, valid)}",
+                    "tool_call",
+                    tool=name,
+                    args=valid,
+                    args_ok=True,
+                )
+                self._trace(
+                    f"{self._rp()}预取：{self._summarize(name, result)}",
                     "tool_result",
+                    tool=name,
                     args_ok=result.get("success", False),
                 )
+                self._log_detail("prefetch", {"tool": name, "args": valid, "result": result})
                 done.append((name, valid, result))
         return done
 
@@ -438,9 +528,9 @@ class TravelAgent:
         self.state["prefetch"] = {"weather": weather, "pois": pois}
         hits = sum(len(items) for items in pois.values())
         self._trace(
-            f"[准备] 预取完成：天气 {len(weather)} 天、景点候选 {hits} 个"
-            f"（{len(pois)} 个关键词，耗时 {round(time.time() - started, 1)}s）",
+            f"{self._rp()}预取完成：天气 {len(weather)} 天、景点候选 {hits} 个",
             "prepare",
+            detail=f"{len(pois)} 个关键词，耗时 {round(time.time() - started, 1)} 秒",
         )
 
     def _prefetch_block(self, c: dict[str, Any]) -> str:
@@ -495,7 +585,7 @@ class TravelAgent:
         }
         self.round_no = 0
         self._trace(
-            f"[准备] 收到需求：{c['city']} {c['days']} 天 {c['people']} 人，预算 {c['budget']:.0f} 元，"
+            f"{self._rp()}收到需求：{c['city']} {c['days']} 天 {c['people']} 人，预算 {c['budget']:.0f} 元，"
             f"同行人 {('、'.join(c['companions']) or '无')}",
             "constraint",
         )
@@ -522,8 +612,11 @@ class TravelAgent:
                 messages.append(
                     {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
                 )
-                names = [((call.get("function") or {}).get("name") or "?") for call in tool_calls]
-                self._trace(f"[第{round_no}轮] 模型决策：调用工具 {'、'.join(names)}", "decision")
+                names = [zh_labels.tool_name((call.get("function") or {}).get("name")) for call in tool_calls]
+                self._trace(
+                    f"{self._rp()}模型决策：调用 {len(tool_calls)} 个工具（{'、'.join(names)}）",
+                    "decision",
+                )
                 for call in tool_calls:
                     fn = call.get("function") or {}
                     name = fn.get("name") or ""
@@ -536,13 +629,14 @@ class TravelAgent:
                             "content": json.dumps(result, ensure_ascii=False),
                         }
                     )
+                self._flush_cache_summary()
                 continue
 
             text = message.get("content") or ""
             parsed, err = schemas.parse_itinerary(text)
             if parsed is None:
                 truncated = self.state.pop("truncated", False)
-                self._trace(f"[第{round_no}轮] 行程草稿解析失败：{err}", "parse_error")
+                self._trace(f"{self._rp()}行程草稿没能按格式解析，已请模型重发", "parse_error", detail=str(err))
                 messages.append({"role": "assistant", "content": text})
                 extra = (
                     "上一次回复因为达到输出长度上限被截断。请把每个条目的 note / weather_note 压到 30 字以内，"
@@ -563,9 +657,10 @@ class TravelAgent:
             leg_cost, leg_notes = self._leg_transport(parsed)
             issues = validator.validate(parsed, c, router=self._validate_router, extra_transport=leg_cost)
             if issues:
-                self._trace(f"[第{round_no}轮] 校验结果：发现 {len(issues)} 个问题，需要重排", "validation")
+                self._flush_cache_summary()
+                self._trace(f"{self._rp()}校验结果：发现 {len(issues)} 个问题，需要重排", "validation")
                 for idx, issue in enumerate(issues, 1):
-                    self._trace(f"[第{round_no}轮] 问题{idx}：{issue}", "issue")
+                    self._trace(f"{self._rp()}问题 {idx}：{issue}", "issue")
                 signature = tuple(sorted(issues))
                 if signature == issue_signature:
                     same_streak += 1
@@ -573,8 +668,8 @@ class TravelAgent:
                     issue_signature, same_streak = signature, 0
                 if same_streak >= 2:
                     self._trace(
-                        f"[第{round_no}轮] 同一组问题已连续 {same_streak + 1} 轮未改善，"
-                        "停止重排以免空转到上限（节省时间与 token）",
+                        f"{self._rp()}同一组问题已连续 {same_streak + 1} 轮未改善，"
+                        "停止重排以免空转到上限（节省时间与接口费用）",
                         "give_up",
                     )
                     break
@@ -590,11 +685,12 @@ class TravelAgent:
                 )
                 continue
 
-            self._trace(f"[第{round_no}轮] 校验结果：6 项规则全部通过", "validation")
+            self._flush_cache_summary()
+            self._trace(f"{self._rp()}校验结果：6 项规则全部通过", "validation")
             if leg_cost > 0:
                 self._trace(
-                    f"[第{round_no}轮] 点间交通费：{'、'.join(leg_notes)}，合计 {leg_cost:.0f} 元"
-                    "（plan_route 结果，代码累加）",
+                    f"{self._rp()}点间交通费：{'、'.join(leg_notes)}，合计 {leg_cost:.0f} 元"
+                    "（由路线规划结果按代码累加）",
                     "budget",
                 )
             self.state["leg_transport"] = (leg_cost, leg_notes)
@@ -619,13 +715,17 @@ class TravelAgent:
             breakdown["transport"] = round((breakdown.get("transport") or 0) + leg_cost, 1)
             budget["breakdown"] = breakdown
             budget["total"] = round((budget.get("total") or 0) + leg_cost, 1)
-            budget["route_note"] = f"点间交通费 {leg_cost:.0f} 元由 plan_route 结果按代码累加"
+            budget["route_note"] = f"点间交通费 {leg_cost:.0f} 元由路线规划结果按代码累加"
         elapsed = round(time.time() - started, 1)
         tool_calls = self.state.get("tool_call_count", 0)
+        cache_hits = self.state.get("cache_hits", 0)
         self._trace(
-            f"[完成] 状态 {status}｜迭代 {iterations} 次｜工具调用 {tool_calls} 次｜耗时 {elapsed}s｜"
-            f"总预算 {budget.get('total')} 元",
+            f"【完成】状态：{zh_labels.status(status)}｜迭代 {iterations} 次｜工具调用 {tool_calls} 次｜"
+            f"耗时 {elapsed} 秒｜总预算 {budget.get('total')} 元",
             "done",
+            iterations=iterations,
+            tool_calls=tool_calls,
+            cache_hits=cache_hits,
         )
         result: dict[str, Any] = {
             "status": status,
@@ -635,6 +735,7 @@ class TravelAgent:
             "issues": issues,
             "iterations": iterations,
             "tool_calls": tool_calls,
+            "cache_hits": cache_hits,
             "elapsed": elapsed,
             "trace": self.state["trace_log"],
             "usage": self.state.get("usage", {}),
@@ -646,8 +747,8 @@ class TravelAgent:
 # --------------------------------------------------------------------------- #
 # 交付层：Markdown 行程单
 # --------------------------------------------------------------------------- #
-TYPE_LABELS = {"attraction": "景点", "food": "餐饮", "hotel": "住宿", "transport": "交通", "rest": "休整"}
-TRANSPORT_LABELS = {"driving": "驾车", "walking": "步行", "transit": "公交"}
+TYPE_LABELS = zh_labels.ITEM_TYPE_LABELS
+TRANSPORT_LABELS = zh_labels.TRANSPORT_LABELS
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -670,15 +771,15 @@ def render_markdown(result: dict[str, Any]) -> str:
         f"- 总预算：**{budget.get('total', 0)} 元**（用户上限 {float(c.get('budget') or 0):.0f} 元）"
     )
     lines.append(
-        f"- 生成状态：{result.get('status')}　迭代：{result.get('iterations')} 轮　"
-        f"工具调用：{result.get('tool_calls')} 次　耗时：{result.get('elapsed')}s"
+        f"- 生成状态：{zh_labels.status(result.get('status'))}　迭代：{result.get('iterations')} 轮　"
+        f"工具调用：{result.get('tool_calls')} 次　耗时：{result.get('elapsed')} 秒"
     )
     lines.append("")
 
     parts = budget.get("breakdown") or {}
-    lines += ["## 预算明细", "", "| 项目 | 金额(元) |", "| --- | --- |"]
-    for label, key in (("门票", "ticket"), ("交通", "transport"), ("餐饮", "food"), ("住宿", "hotel")):
-        lines.append(f"| {label} | {parts.get(key, 0)} |")
+    lines += ["## 预算明细", "", "| 项目 | 金额（元） |", "| --- | --- |"]
+    for key, value in parts.items():
+        lines.append(f"| {zh_labels.budget_item(key)} | {value} |")
     lines += [f"| **合计** | **{budget.get('total', 0)}** |", ""]
     if budget.get("route_note"):
         lines += [f"> {budget['route_note']}", ""]
@@ -688,7 +789,7 @@ def render_markdown(result: dict[str, Any]) -> str:
         if day.get("weather_note"):
             lines += [f"天气：{day['weather_note']}", ""]
         lines += [
-            "| 时间 | 类型 | 安排 | 交通 | 花费(元) | 备注 |",
+            "| 时间 | 类型 | 安排 | 交通 | 花费（元） | 备注 |",
             "| --- | --- | --- | --- | --- | --- |",
         ]
         for item in day.get("items") or []:
@@ -698,9 +799,9 @@ def render_markdown(result: dict[str, Any]) -> str:
             lines.append(
                 "| {time} | {type} | {name} | {transport} | {cost} | {note} |".format(
                     time=f"{item.get('start', '')}-{item.get('end', '')}",
-                    type=TYPE_LABELS.get(item.get("type", ""), item.get("type", "")),
+                    type=zh_labels.item_type(item.get("type")),
                     name=item.get("name", ""),
-                    transport=TRANSPORT_LABELS.get(item.get("transport", ""), "—"),
+                    transport=zh_labels.transport(item.get("transport")),
                     cost=item.get("cost", 0),
                     note=note.replace("|", "/"),
                 )
@@ -715,8 +816,20 @@ def render_markdown(result: dict[str, Any]) -> str:
     if issues:
         lines += ["## 未解决的校验问题（已达迭代上限）", ""] + [f"- {issue}" for issue in issues] + [""]
 
-    lines += ["## 执行 Trace", "", "<details><summary>展开查看每一步决策</summary>", "", "```text"]
-    lines += [str(entry.get("line", "")) for entry in result.get("trace") or []]
+    key_lines = [
+        str(entry.get("line", ""))
+        for entry in result.get("trace") or []
+        if zh_labels.is_key_trace(entry) and entry.get("line")
+    ]
+    tech_lines = [
+        zh_labels.describe_technical(entry)
+        for entry in result.get("trace") or []
+        if zh_labels.is_tech_trace(entry)
+    ]
+    lines += ["## 执行过程", "", "```text"]
+    lines += key_lines[-30:]
+    lines += ["```", "", "<details><summary>技术明细（每次工具调用的参数与耗时）</summary>", "", "```text"]
+    lines += tech_lines
     lines += [
         "```",
         "",
@@ -724,7 +837,7 @@ def render_markdown(result: dict[str, Any]) -> str:
         "",
         "---",
         "",
-        "数据来源：DeepSeek（决策）· 高德地图 Web 服务（地理编码 / POI / 路径规划，GCJ-02）· "
-        "Open-Meteo（天气）· 预算与耗时由 Python 代码计算。",
+        "数据来源：DeepSeek（决策）· 高德地图（地理编码 / 地点检索 / 路径规划）· "
+        "Open-Meteo（天气）· 预算与耗时由代码计算。",
     ]
     return "\n".join(lines)

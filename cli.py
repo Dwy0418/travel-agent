@@ -1,4 +1,4 @@
-"""命令行入口：一条命令生成行程单，Trace 实时打印，结果写入 results/。
+"""命令行入口：一条命令生成行程单，执行过程实时打印，结果写入 results/。
 
 用法：
     python cli.py --city 梅州市 --days 2 --people 2 --budget 3000 --start 2026-05-01 \
@@ -11,13 +11,13 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from travel_agent import agent, config
+from travel_agent import agent, config, zh_labels
 
 OUT_DIR = Path(__file__).resolve().parent / "results"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="国内旅行规划 Agent（自校验 + 自动重排）")
+    parser = argparse.ArgumentParser(description="国内旅行规划智能体（自校验 + 自动重排）")
     parser.add_argument("--city", default="梅州市", help="目的地城市")
     parser.add_argument("--days", type=int, default=2, help="行程天数 1-10")
     parser.add_argument("--people", type=int, default=2, help="出行人数")
@@ -31,7 +31,7 @@ def main() -> int:
 
     missing = config.require_keys()
     if missing:
-        print(f"[错误] 缺少环境变量：{'、'.join(missing)}。请复制 .env.example 为 .env 并填写。")
+        print(f"[错误] 缺少密钥：{'、'.join(missing)}。请复制 .env.example 为 .env 并填写。")
         return 2
 
     def on_trace(entry: dict) -> None:
@@ -64,8 +64,8 @@ def main() -> int:
     print()
     print(result["markdown"])
     print()
-    print(f"[完成] 状态={result['status']} 迭代={result['iterations']} 工具={result['tool_calls']} "
-          f"耗时={result['elapsed']}s 预算={result['budget'].get('total')}元")
+    print(f"[完成] 状态={zh_labels.status(result['status'])} 迭代={result['iterations']} "
+          f"工具={result['tool_calls']} 耗时={result['elapsed']}秒 预算={result['budget'].get('total')}元")
     print(f"[输出] {out_file}")
     return 0 if result["status"] == "ok" else 1
 

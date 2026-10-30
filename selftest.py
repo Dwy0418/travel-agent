@@ -18,7 +18,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from travel_agent import agent, config, schemas, tools, validator
+from travel_agent import agent, config, schemas, tools, validator, zh_labels
 
 TODAY = date.today()
 START = (TODAY + timedelta(days=1)).isoformat()
@@ -279,7 +279,7 @@ def test_dwell_target_advice() -> None:
     issues = issues_of(plan, constraints(days=1, budget=100000, companions="带老人"))
     check(
         "校验-超时配额：带老人时目标压到 4 小时以内",
-        has_issue(issues, "游览总时长", "游览上限 4h"),
+        has_issue(issues, "游览总时长", "游览上限 4 小时"),
         "；".join(issues)[:160],
     )
 
@@ -432,14 +432,25 @@ def test_markdown() -> None:
         "issues": [],
         "iterations": 2,
         "tool_calls": 5,
+        "cache_hits": 3,
         "elapsed": 1.2,
-        "trace": [{"line": "[准备] 自检"}],
+        "trace": [{"kind": "prepare", "line": "【准备】自检"}],
     }
     md = agent.render_markdown(result)
     check(
-        "渲染：Markdown 含每日表格 / 预算明细 / Trace",
-        "## 预算明细" in md and "## 执行 Trace" in md and "| 时间 |" in md and "第1天" in md and "总预算" in md,
+        "渲染：Markdown 含每日表格 / 预算明细 / 执行过程",
+        "## 预算明细" in md and "## 执行过程" in md and "| 时间 |" in md and "第1天" in md and "总预算" in md,
         md.splitlines()[0] if md else "空",
+    )
+    check(
+        "渲染：类型 / 交通 / 预算项目全部中文",
+        "| 景点 |" in md and "驾车" in md and "| 门票 |" in md and "attraction" not in md and "driving" not in md,
+        "存在英文枚举值" if "attraction" in md or "driving" in md else "中文",
+    )
+    check(
+        "渲染：执行过程不含原始坐标",
+        "lng=" not in md and "lat=" not in md and "116.4" not in md,
+        "含机器参数" if "lng=" in md or "lat=" in md else "干净",
     )
 
 
@@ -492,6 +503,83 @@ def test_agent_self_correction() -> None:
         f"{len(traces)}",
     )
     check("Agent：返回的 Markdown 可导出", "## 预算明细" in result["markdown"], "缺少预算明细")
+    check(
+        "Agent：执行日志中文化且不含原始坐标",
+        all(
+            "lng=" not in entry["line"] and "lat=" not in entry["line"] and "命中缓存：" not in entry["line"]
+            for entry in result["trace"]
+        ),
+        "；".join(e["line"] for e in result["trace"] if "lng=" in e["line"])[:120],
+    )
+    cache_lines = [entry["line"] for entry in result["trace"] if "命中缓存" in entry["line"]]
+    check(
+        "Agent：缓存命中只按轮汇总，不逐条打印",
+        all("本轮命中缓存" in line for line in cache_lines),
+        "；".join(cache_lines)[:120],
+    )
+
+
+def test_zh_labels() -> None:
+    """显示层：英文枚举必须全部有中文对照，日志必须是人话。"""
+    enums = {
+        "item_type": ["attraction", "rest", "transport", "hotel", "meal", "food", "shopping", "other"],
+        "transport": ["driving", "walking", "transit", "riding", "taxi", "none"],
+        "budget_item": ["ticket", "transport", "food", "hotel", "other"],
+        "status": ["ok", "max_iterations", "failed"],
+    }
+    bad = [
+        f"{name}({value})"
+        for name, values in enums.items()
+        for value in values
+        if getattr(zh_labels, name)(value).isascii()
+    ]
+    check("显示层：英文枚举全部有中文对照", not bad, "、".join(bad))
+    check(
+        "显示层：工具调用改成人话",
+        zh_labels.describe_tool_call("geocode", {"place_name": "梅州市"}) == "查询地名：梅州市"
+        and zh_labels.describe_tool_call("search_poi", {"city": "梅州市", "keyword": "景点", "count": 8})
+        == "搜索梅州市景点（取 8 个）"
+        and zh_labels.describe_tool_call(
+            "plan_route", {"mode": "driving"}, origin="中国客家博物馆", dest="嘉应古城"
+        )
+        == "规划路线：中国客家博物馆 → 嘉应古城（驾车）",
+        zh_labels.describe_tool_call("plan_route", {"mode": "driving"}),
+    )
+    route_text = zh_labels.describe_tool_result(
+        "plan_route",
+        {"success": True, "distance_m": 2700, "duration_sec": 660, "cost_yuan": 9, "estimated": False},
+    )
+    check(
+        "显示层：路线结果无坐标、带单位",
+        route_text == "路线结果：2.7 公里 · 11 分钟 · 9 元",
+        route_text,
+    )
+    check(
+        "显示层：英文报错被翻成友好中文",
+        "已跳过" in zh_labels.friendly_error("INVALID_USER_KEY")
+        and zh_labels.friendly_error("接口超时 timeout") == "接口响应超时，已跳过该点",
+        zh_labels.friendly_error("INVALID_USER_KEY"),
+    )
+    rows = zh_labels.plan_rows(GOOD_PLAN)
+    check(
+        "显示层：行程表类型/交通列中文",
+        bool(rows) and all(row["类型"] == "景点" and row["交通"] == "驾车" for row in rows),
+        str(rows[0] if rows else {}),
+    )
+    budget_rows = zh_labels.budget_rows({"ticket": 110, "transport": 30, "food": 600, "hotel": 200})
+    check(
+        "显示层：预算表项目列中文",
+        [row["项目"] for row in budget_rows] == ["门票", "交通", "餐饮", "住宿"],
+        str(budget_rows),
+    )
+    check(
+        "显示层：技术明细不含坐标与英文参数名",
+        "坐标已记录到后台日志" in zh_labels.describe_technical(
+            {"kind": "tool_call", "tool": "plan_route", "args": {"mode": "driving", "origin_lng": 116.1}}
+        ),
+        zh_labels.describe_technical({"kind": "tool_call", "tool": "plan_route", "args": {}}),
+    )
+
 
 
 def test_agent_max_iterations() -> None:
@@ -535,7 +623,13 @@ def test_ui_apptest() -> None:
     try:
         page_app = AppTest.from_file(page, default_timeout=90).run()
         check("界面：首屏无异常", not page_app.exception, str([e.value for e in page_app.exception]))
-        check("界面：缺少 Key 时给出提示", any("缺少环境变量" in w.value for w in page_app.warning))
+        check("界面：缺少 Key 时给出提示", any("缺少密钥" in w.value for w in page_app.warning))
+        check(
+            "界面：标题与副标题已中文化",
+            any("智能体" in title.value for title in page_app.title)
+            and all("DeepSeek" not in caption.value for caption in page_app.caption),
+            str([t.value for t in page_app.title]),
+        )
 
         page_app.button[0].click().run()
         check(
@@ -551,18 +645,41 @@ def test_ui_apptest() -> None:
         "status": "ok",
         "iterations": 2,
         "tool_calls": 5,
+        "cache_hits": 3,
         "elapsed": 3.2,
         "issues": [],
         "constraints": cons,
         "itinerary": GOOD_PLAN,
         "budget": tools.estimate_budget(GOOD_PLAN, cons["days"], cons["people"]),
-        "trace": [{"kind": "decision", "line": "第 1 轮：调用工具 search_poi"}],
+        "trace": [{"kind": "decision", "line": "【第 1 轮】模型决策：调用 1 个工具（地点检索）"}],
     }
     result["markdown"] = agent.render_markdown(result)
     page_app.session_state["result"] = result
     page_app.run()
     check("界面：行程渲染无异常", not page_app.exception, str([e.value for e in page_app.exception]))
     check("界面：行程表与预算表都渲染", len(page_app.dataframe) >= 2, f"{len(page_app.dataframe)} 个表格")
+    check(
+        "界面：顶部只保留 3 个指标卡",
+        [m.label for m in page_app.metric][:3] == ["状态", "总预算（元）", "耗时（秒）"],
+        str([m.label for m in page_app.metric]),
+    )
+    check(
+        "界面：表格类型/交通列全中文",
+        all(
+            "attraction" not in str(cell) and "driving" not in str(cell)
+            for cell in page_app.dataframe[0].value["类型"].tolist() + page_app.dataframe[0].value["交通"].tolist()
+        ),
+        str(page_app.dataframe[0].value.head(1).to_dict("records")),
+    )
+    labels = [str(expander.label) for expander in page_app.expander]
+    check(
+        "界面：执行过程与折叠区文案已中文化",
+        any(label.startswith("执行过程") for label in labels)
+        and any("结构化数据" in label for label in labels)
+        and not any("Trace" in label or "JSON" in label for label in labels)
+        and any("下载行程单" in str(button.label) for button in page_app.download_button),
+        str(labels),
+    )
 
 
 def test_route_v5_parsing() -> None:
@@ -784,6 +901,7 @@ def main() -> int:
         test_truncated_json_fragment,
         test_split_opening_hours,
         test_agent_self_correction,
+        test_zh_labels,
         test_agent_max_iterations,
         test_ui_apptest,
         test_config_secrets,
