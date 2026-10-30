@@ -1,0 +1,26 @@
+# Streamlit 运行配置：本地与 Streamlit Community Cloud 通用（本文件可提交到仓库）
+
+[theme]
+# 浅色主题 + 单一主色，保证行程表与黄色校验告警都清晰可读
+base = "light"
+primaryColor = "#1F6FEB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6F8"
+textColor = "#1B1F24"
+font = "sans serif"
+
+[browser]
+# 关闭使用统计上报（国内访问更快，也少一次外部请求）
+gatherUsageStats = false
+
+[server]
+# 以服务方式运行：不自动弹浏览器，供云端 / 内网访问
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 5
+
+[client]
+# 出错时把堆栈展示给用户，方便现场排障（答辩演示时很关键）
+showErrorDetails = true
+toolbarMode = "minimal"
