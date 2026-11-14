@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from travel_agent import agent, config, zh_labels
+from travel_agent import agent, config, llm, zh_labels
 
 st.set_page_config(page_title=zh_labels.PAGE_TITLE, page_icon="🧭", layout="wide")
 
@@ -638,6 +638,22 @@ def _load_bg_library() -> dict[str, list[str]]:
 
 
 BG_LIBRARY = _load_bg_library()
+
+
+def _load_video_library() -> dict[str, dict[str, str]]:
+    """目的地 -> B 站视频（bv / title / author）；文件缺失就当没有，详情面板退回站内搜索链接。"""
+    path = Path(__file__).resolve().parent / "video_library.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {
+        name: item for name, item in data.items()
+        if isinstance(item, dict) and str(item.get("bv") or "").startswith("BV")
+    }
+
+
+VIDEO_LIBRARY = _load_video_library()
 
 
 def _bg_url(key: str) -> str:
@@ -1670,8 +1686,13 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
 
 /* ==========================================================================
    V4 图文示例卡片（小红书/携程宣传图风格）
+   照片贴顶、整张照片就是一颗透明按钮（点开详情），底部一条「套用这个行程」。
+   卡片容器在 1.66/1.67 都是「直接装着 3 个 stElementContainer 的 stVerticalBlock」，
+   所以只认这个结构，不认版本各异的边框 wrapper testid。
    ========================================================================== */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) {
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] > div .pc-face) {
+    position: relative;
+    gap: 0 !important;
     padding: 0 !important;
     background: #0B1220 !important;
     border: none !important;
@@ -1680,42 +1701,30 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) {
     box-shadow: 0 8px 24px rgba(2, 6, 23, 0.45);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) > div,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) [data-testid="stVerticalBlock"] {
-    gap: 0 !important;
-    padding: 0 !important;
-}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover {
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] > div .pc-face):hover {
     transform: translateY(-5px);
     box-shadow: 0 22px 44px rgba(2, 6, 23, 0.68);
 }
 
-.pc-card {
+/* 照片那一格：容器定高 240，浮层铺满并挂上背景图 */
+div[data-testid="stElementContainer"]:has(.pc-face) {
     position: relative;
     height: 240px;
-    overflow: hidden;
-    border-radius: 16px 16px 0 0;
-    background: #1E293B;
-    /* 入场动画：每次目的地切换、卡片内容被重新渲染时都会重新播放 */
-    animation: cardRiseIn 0.4s ease-out both;
-    will-change: transform, opacity;
 }
 @keyframes cardRiseIn {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
 }
-.pc-img {
+.pc-face {
     position: absolute;
     inset: 0;
+    overflow: hidden;
+    pointer-events: none;
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    transform: scale(1);
-    transition: transform 0.3s ease;
-}
-.pc-card:hover .pc-img,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover .pc-img {
-    transform: scale(1.05);
+    animation: cardRiseIn 0.4s ease-out both;
+    will-change: transform, opacity;
 }
 .pc-shade {
     position: absolute;
@@ -1724,7 +1733,6 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover .pc-img {
                 rgba(0, 0, 0, 0.90) 0%,
                 rgba(0, 0, 0, 0.45) 38%,
                 rgba(0, 0, 0, 0.00) 72%);
-    pointer-events: none;
 }
 .pc-tag {
     position: absolute;
@@ -1762,28 +1770,72 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover .pc-img {
     color: #D3DCE8;
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
 }
-
-/* 按钮与图片融合为一条底部操作栏 */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton {
-    margin: 0 !important;
-    padding: 0 !important;
+.pc-hint {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    padding: 4px 10px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #DBEAFE;
+    background: rgba(15, 23, 42, 0.62);
+    border: 1px solid rgba(147, 197, 253, 0.34);
+    border-radius: 999px;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button[kind="secondary"] {
+div[data-testid="stVerticalBlock"]:has(.pc-face):hover .pc-hint {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* 紧跟照片的那颗按钮抬到照片上，撑满、隐形，只留点击 */
+div[data-testid="stElementContainer"]:has(.pc-face) + div[data-testid="stElementContainer"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 240px;
+    z-index: 3;
+}
+div[data-testid="stElementContainer"]:has(.pc-face) + div [data-testid="stButton"] {
+    height: 100%;
+}
+div[data-testid="stElementContainer"]:has(.pc-face) + div [data-testid="stButton"] button {
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0 !important;
+    font-size: 0 !important;
+    color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    opacity: 0;
+}
+
+/* 底部操作条 */
+div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child {
+    padding: 10px 14px 12px;
+}
+div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child
+    [data-testid="stButton"] button {
     width: 100% !important;
     margin: 0 !important;
-    padding: 0.62rem 1rem;
+    padding: 0.62rem 1rem !important;
+    font-size: 13.5px !important;
     background: #0B1220 !important;
     border: none !important;
     border-top: 1px solid rgba(148, 163, 184, 0.14) !important;
-    border-radius: 0 0 16px 16px !important;
+    border-radius: 0 !important;
     color: #60A5FA !important;
-    font-size: 13.5px;
     font-weight: 700;
     box-shadow: none !important;
     transition: background 0.2s ease, color 0.2s ease;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button:hover {
+div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child
+    [data-testid="stButton"] button:hover {
     background: rgba(59, 130, 246, 0.18) !important;
     color: #BFDBFE !important;
     border-top-color: rgba(59, 130, 246, 0.40) !important;
@@ -1818,6 +1870,169 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
 .rec-tip {
     font-size: 12px;
     color: #7C8CA3;
+}
+
+/* ==========================================================================
+   问答式侧栏 + 收起态回弹 + 可点卡片
+   ========================================================================== */
+/* 管家气泡：靠 backdrop-filter 糊住身后的风光，字才立得住 */
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] {
+    background: rgba(9, 15, 28, 0.46) !important;
+    border: 1px solid rgba(148, 163, 184, 0.16) !important;
+    border-radius: 14px;
+    padding: 10px 12px !important;
+    margin-bottom: 8px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] p {
+    font-size: 13px;
+    line-height: 1.75;
+    margin: 0 0 4px 0;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] ul {
+    margin: 2px 0 4px 0;
+    padding-left: 18px;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] li {
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: #CBD5E1;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessageContent"] {
+    min-height: 0 !important;
+}
+/* 输入框贴着侧栏底部，占位文案在窄侧栏里要能折行显示 */
+section[data-testid="stSidebar"] [data-testid="stChatInput"] {
+    background: transparent !important;
+}
+section[data-testid="stSidebar"] [data-testid="stChatInput"] textarea {
+    font-size: 13px;
+    min-height: 46px !important;
+}
+/* 「精确设置」弹层：把原来三组控件收进一个入口 */
+section[data-testid="stSidebar"] [data-testid="stPopoverBody"] {
+    background: rgba(8, 13, 26, 0.94) !important;
+    border: 1px solid rgba(148, 163, 184, 0.22) !important;
+    border-radius: 14px;
+    padding: 10px 12px 14px 12px !important;
+    max-height: 72vh;
+    overflow-y: auto;
+}
+
+/* 收起侧栏：Streamlit 只做 -300px 平移，被 min-width 撑住的 52px 会露出来，
+   主区也白留一条空带；收起态把面板压回 0 宽，让内容等比例左移补上。 */
+section[data-testid="stSidebar"][data-collapsed="true"] {
+    min-width: 0 !important;
+    width: 0 !important;
+    border-right: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    overflow: hidden !important;
+}
+section[data-testid="stSidebar"][data-collapsed="true"] [data-testid="stSidebarContent"],
+section[data-testid="stSidebar"][data-collapsed="true"] [data-testid="stSidebarUserContent"] {
+    visibility: hidden !important;
+}
+.stApp:has(section[data-testid="stSidebar"][data-collapsed="true"]) [data-testid="stMainBlockContainer"] {
+    padding-left: clamp(1rem, 3vw, 3.5rem);
+}
+/* 收起后首屏整体上移：标题少留一段头顶空白（.hero 那条是 !important，这里也得跟上） */
+.stApp:has(section[data-testid="stSidebar"][data-collapsed="true"]) .hero {
+    padding-top: clamp(28px, 6vh, 56px) !important;
+}
+
+/* 首屏自适应：标题跟着视口缩放，窄屏（或侧栏展开挤占宽度）时卡片自动减列 */
+.hero {
+    padding: clamp(34px, 7vh, 84px) 12px clamp(18px, 3vh, 34px) 12px !important;
+}
+.hero-title {
+    font-size: clamp(28px, 3.4vw, 46px) !important;
+}
+.hero-sub {
+    font-size: clamp(12px, 1.05vw, 15px) !important;
+    max-width: min(92%, 720px) !important;
+}
+.rec-head {
+    padding: 0 clamp(2px, 0.6vw, 10px);
+}
+@media (max-width: 1280px) {
+    div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"] {
+        flex: 1 1 46% !important;
+        min-width: 260px !important;
+    }
+}
+@media (max-width: 820px) {
+    div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"] {
+        flex: 1 1 100% !important;
+    }
+}
+
+/* 详情弹窗：图集两列、视频 16:9，宽屏时并排 */
+[data-testid="stDialog"] .dt-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: #FFFFFF;
+    margin-bottom: 4px;
+}
+[data-testid="stDialog"] .dt-desc {
+    font-size: 13.5px;
+    color: #B6C2D4;
+    line-height: 1.75;
+}
+[data-testid="stDialog"] .dt-sec {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: #93C5FD;
+    margin: 16px 0 8px 0;
+}
+[data-testid="stDialog"] .dt-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+[data-testid="stDialog"] .dt-fact {
+    padding: 5px 11px;
+    font-size: 12.5px;
+    color: #E2E8F0;
+    background: rgba(148, 163, 184, 0.12);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 999px;
+}
+[data-testid="stDialog"] .dt-video {
+    position: relative;
+    width: 100%;
+    max-width: 820px;
+    aspect-ratio: 16 / 9;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: #0B1220;
+}
+[data-testid="stDialog"] .dt-video iframe {
+    position: absolute;
+    inset: 0;
+    width: 100% !important;
+    height: 100% !important;
+    border: none;
+}
+[data-testid="stDialog"] .dt-gal {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+[data-testid="stDialog"] .dt-gal img {
+    width: 100%;
+    height: 168px;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+}
+[data-testid="stDialog"] .dt-link {
+    font-size: 12.5px;
+    color: #93C5FD;
 }
 
 /* ==========================================================================
@@ -2052,20 +2267,29 @@ def _payload_to_state(payload: dict[str, Any]) -> None:
     if prefs is None:
         prefs, parsed = _split_preferences(str(payload.get("preferences") or ""))
         note = note if note is not None else parsed
-    st.session_state["f_prefs"] = [o for o in (_preference_option(p) for p in (prefs or [])) if o]
+    wanted_prefs = [o for o in (_preference_option(p) for p in (prefs or [])) if o]
+    st.session_state["f_prefs"] = wanted_prefs
     st.session_state["f_pref_note"] = str(note or "")
+    # checkbox_group 只认 f_prefs_i 这些逐选项 key，光写聚合键不会真的勾上
+    for index, option in enumerate(PREFERENCE_OPTIONS):
+        st.session_state[f"f_prefs_{index}"] = option in wanted_prefs
 
-    st.session_state["f_companions"] = [
+    wanted_company = [
         opt for opt in (_companion_option(tag) for tag in (payload.get("companions") or [])) if opt
     ]
+    st.session_state["f_companions"] = wanted_company
+    for index, option in enumerate(COMPANION_OPTIONS):
+        st.session_state[f"f_companions_{index}"] = option in wanted_company
     st.session_state["f_request"] = payload.get("request", CONSTRAINT_DEFAULTS["request"])
     start = payload.get("start_date")
     span = max(0, int(payload.get("days") or CONSTRAINT_DEFAULTS["days"]) - 1)
-    if start:
-        start_day = date.fromisoformat(str(start))
-        st.session_state["f_start"] = start_day
-        # 回程日期：优先用显式传入的 end，否则按天数推算
-        st.session_state["f_end"] = payload.get("end") or (start_day + timedelta(days=span))
+    if not start:
+        # 卡片没写日期就沿用当前出发日，但回程一定要按卡片天数重算：
+        # 天数滑块早已改成「出发 + 回程」，不动回程等于卡片的 days 白填
+        start = st.session_state.get("f_start") or (date.today() + timedelta(days=1))
+    start_day = date.fromisoformat(str(start)) if isinstance(start, str) else start
+    st.session_state["f_start"] = start_day
+    st.session_state["f_end"] = payload.get("end") or (start_day + timedelta(days=span))
 
 
 def apply_pending_constraints() -> None:
@@ -2082,6 +2306,7 @@ def apply_pending_preset() -> None:
         return
     _payload_to_state(preset["payload"])
     st.session_state["_preset_hint"] = preset["title"]
+    _chat_log().append({"role": "assistant", "content": f"已套用「{preset['title']}」，条件都填好了。"})
 
 
 def render_empty_state() -> None:
@@ -2098,9 +2323,10 @@ def render_empty_state() -> None:
     )
     st.markdown(
         f"<div class='rec-head'><span class='rec-scope'>{escape(scope)}</span>"
-        "<span class='rec-tip'>点开卡片下方按钮即可套用</span></div>",
+        "<span class='rec-tip'>点图片看详情，点下方按钮直接出行程</span></div>",
         unsafe_allow_html=True,
     )
+    st.markdown(_card_photo_css(cards), unsafe_allow_html=True)
 
     for row_idx, row in enumerate((cards[0:3], cards[3:6])):
         if not row:
@@ -2110,22 +2336,155 @@ def render_empty_state() -> None:
             with col:
                 with card():
                     # 同一排的卡片依次延迟 60ms 出现，形成「依次飘上来」的错落感
-                    delay = (row_idx * 3 + col_idx) * 60
-                    st.markdown(
-                        f"<div class='pc-card' style='animation-delay:{delay}ms'>"
-                        f"<div class='pc-img' style=\"background-image:url('{preset['img']}')\"></div>"
-                        "<div class='pc-shade'></div>"
-                        f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
-                        "<div class='pc-body'>"
-                        f"<div class='pc-title'>{escape(preset['title'])}</div>"
-                        f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
-                        "</div>"
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
-                    if full_width_button("套用这个旅程", key=f"preset_{preset['key']}"):
+                    slot = row_idx * 3 + col_idx
+                    st.markdown(_card_face(preset, slot), unsafe_allow_html=True)
+                    # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
+                    if st.button("看详情", key=f"detail_{preset['key']}"):
+                        show_detail(preset)
+                    if full_width_button("套用这个行程", key=f"preset_{preset['key']}"):
+                        # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
                         st.session_state["_pending_preset"] = preset
+                        st.session_state["_run_preset"] = True
                         st.rerun()
+
+
+def _card_face(preset: dict[str, Any], slot: int) -> str:
+    """卡片正面浮层：遮罩、标签、标题与「看详情」提示。点击交给底下的照片按钮。"""
+    return (
+        f"<div class='pc-face pc-face-{slot}' style='animation-delay:{slot * 60}ms'>"
+        "<div class='pc-shade'></div>"
+        f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
+        "<div class='pc-hint'>👁 看详情</div>"
+        "<div class='pc-body'>"
+        f"<div class='pc-title'>{escape(preset['title'])}</div>"
+        f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _card_photo_css(cards: list[dict[str, Any]]) -> str:
+    """照片按浮层序号挂到各自的 .pc-face-N 上，卡片换一批就换一份规则。"""
+    rules = [
+        f".pc-face-{slot} {{ background-image: url('{item['img']}'); }}"
+        for slot, item in enumerate(cards)
+    ]
+    return "<style>" + "\n".join(rules) + "</style>"
+
+
+def _gallery(city: str, province: str, cover: str) -> list[str]:
+    """详情图集：本市图组优先，不够再用本省补，最后盖上卡片封面，去重取 6 张。"""
+    pool: list[str] = []
+    for urls in (_bg_urls(city), _bg_urls(province), [cover]):
+        for url in urls:
+            if url not in pool:
+                pool.append(url)
+    return pool[:6]
+
+
+def _video_box(name: str, video: dict[str, str]) -> None:
+    """有 BV 就内嵌 B 站播放器，没有就给一条站内搜索链接，别开天窗。"""
+    if video:
+        st.markdown(
+            "<div class='dt-video'><iframe src='https://player.bilibili.com/player.html?"
+            f"bvid={quote(video['bv'])}&isWatchLater=1&autoplay=0&danmaku=0&high_quality=1' "
+            "scrolling='no' frameborder='0' allowfullscreen></iframe></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='dt-link'>🎬 {escape(video.get('title') or '')}"
+            f"　·　来源 {escape(video.get('author') or 'B 站')}　"
+            "<a href='https://www.bilibili.com/video/"
+            f"{quote(video['bv'])}' target='_blank'>在 B 站打开</a></div>",
+            unsafe_allow_html=True,
+        )
+        return
+    search = f"https://search.bilibili.com/all?keyword={quote(f'{_stem(name)} 旅游')}"
+    st.markdown(
+        "<div class='dt-video' style='display:flex;align-items:center;justify-content:center;'>"
+        f"<a class='dt-link' href='{search}' target='_blank' style='color:#BFDBFE;font-size:14px;'>"
+        f"🎬 还没有剪好这个地方的宣传片，点这里去 B 站搜「{_stem(name)} 旅游」</a></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_detail(preset: dict[str, Any]) -> None:
+    """详情正文：行程要点 + 图集 + 视频 + 两个动作按钮。"""
+    row = preset["payload"]
+    city = str(row.get("city") or "")
+    country, province = _locate_city(city)
+    name = city or province
+
+    st.markdown(
+        f"<div class='dt-title'>{escape(preset['tag'])} {escape(preset['title'])}</div>"
+        f"<div class='dt-desc'>{escape(preset['desc'])}</div>",
+        unsafe_allow_html=True,
+    )
+    people = int(row.get("people") or 0)
+    budget = float(row.get("budget") or 0)
+    facts = [
+        f"🗺️ {province} · {city}" if province and province != city else city or "全国",
+        f"🗓️ {int(row.get('days') or 0)} 天",
+        f"👥 {people} 人",
+        f"💰 总预算 {budget:.0f} 元" + (f"（人均 {budget / people:.0f}）" if people and budget else ""),
+    ]
+    tags = [str(tag) for tag in (row.get("companions") or [])]
+    if tags:
+        facts.append("🧑‍🤝‍🧑 " + "、".join(tags))
+    if row.get("preferences"):
+        prefs = row["preferences"]
+        shown = "、".join(str(p) for p in prefs) if isinstance(prefs, (list, tuple, set)) else str(prefs)
+        facts.append("🎯 " + shown)
+    st.markdown(
+        "<div class='dt-sec'>行程要点</div><div class='dt-facts'>"
+        + "".join(f"<span class='dt-fact'>{escape(fact)}</span>" for fact in facts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    if row.get("request"):
+        st.caption(f"原话：{row['request']}")
+
+    st.markdown("<div class='dt-sec'>这个地方长什么样</div>", unsafe_allow_html=True)
+    photos = _gallery(city, province, str(preset.get("img") or ""))
+    if photos:
+        st.markdown(
+            "<div class='dt-gal'>" + "".join(f"<img src='{url}' loading='lazy'>" for url in photos) + "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("这个目的地还没收录实拍图组，先用上方卡片封面顶着。")
+
+    st.markdown("<div class='dt-sec'>先看看视频</div>", unsafe_allow_html=True)
+    _video_box(name, VIDEO_LIBRARY.get(name) or VIDEO_LIBRARY.get(province) or {})
+
+    cols = st.columns([3, 2])
+    with cols[0]:
+        if full_width_button("🚀 就按这个行程规划", kind="primary", key=f"go_{preset['key']}"):
+            st.session_state["_pending_preset"] = preset
+            st.session_state["_run_preset"] = True
+            st.rerun()
+    with cols[1]:
+        if full_width_button("✏️ 只套用，我先改条件", key=f"fill_{preset['key']}"):
+            st.session_state["_pending_preset"] = preset
+            st.rerun()
+
+
+def show_detail(preset: dict[str, Any]) -> None:
+    """新版用弹窗；老版本没有 st.dialog，退回在卡片下方就地展开，功能不缩水。"""
+    dialog = getattr(st, "dialog", None)
+    if callable(dialog):
+        try:
+            @dialog("目的地详情", width="large")
+            def _box(item: dict[str, Any]) -> None:
+                _render_detail(item)
+
+            _box(preset)
+            return
+        except TypeError:
+            pass
+    with popover_or_expander(f"📍 {preset['title']} 详情"):
+        _render_detail(preset)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2415,16 +2774,448 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
     }
 
 
+# ---------------------------------------------------------------------------
+# 问答式约束输入：一句话 -> 结构化条件（规则解析打底，DeepSeek 补全）
+# ---------------------------------------------------------------------------
+CHAT_GREETING = (
+    "我是你的旅行管家 ✈️\n\n"
+    "直接用大白话说就行，比如：\n"
+    "> 10 月 15 号和老婆去扬州玩 3 天，人均 2000，想看园林、吃淮扬菜\n\n"
+    "懒得打字就点下面的「精确设置」，把条件一项项勾好。"
+)
+
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_NUM = r"(\d{1,4}|[一二两三四五六七八九十]{1,3})"
+_UNIT_MULT = {"万": 10000, "千": 1000, "w": 10000, "k": 1000}
+
+# 口语里说「扬州」而不是「扬州市」：两套别名都建，命中取最长的那个
+_CITY_ALIAS: dict[str, tuple[str, str, str]] = {}
+_PROV_ALIAS: dict[str, tuple[str, str]] = {}
+
+
+def _stem(name: str) -> str:
+    """去掉行政区后缀：扬州市 -> 扬州，广西壮族自治区 -> 广西。"""
+    for suffix in ("维吾尔自治区", "壮族自治区", "回族自治区", "自治区"):
+        if name.endswith(suffix) and len(name) > len(suffix) + 1:
+            return name[: -len(suffix)]
+    if name.endswith(("省", "市", "县", "州")) and len(name) > 2:
+        return name[:-1]
+    return name
+
+
+def _build_aliases() -> None:
+    for country, provinces in DESTINATION_TREE.items():
+        _CITY_ALIAS[country.strip()] = (country, "", "")
+        for province, cities in provinces.items():
+            _PROV_ALIAS[province] = (country, province)
+            if _stem(province) != province:
+                _PROV_ALIAS[_stem(province)] = (country, province)
+            for city in cities:
+                _CITY_ALIAS[city] = (country, province, city)
+                if _stem(city) != city:
+                    _CITY_ALIAS[_stem(city)] = (country, province, city)
+
+
+_build_aliases()
+
+# 同行人 / 偏好：口语关键词 -> 带 Emoji 的控件选项
+_COMPANION_KEYS: list[tuple[str, list[str]]] = [
+    ("👤 独自出行", ["一个人", "独自一人", "自己一个", "一个人玩", "独自", "solo"]),
+    ("👩 ❤️ 👨 情侣/夫妻", ["老婆", "老公", "女朋友", "男朋友", "男友", "女友", "对象",
+                             "情侣", "夫妻", "蜜月", "未婚妻", "两个人一起"]),
+    ("👴 带老人", ["老人", "爸妈", "父母", "爸爸", "妈妈", "爷爷", "奶奶", "外公", "外婆", "二老", "长辈"]),
+    ("👶 带小孩", ["小孩", "孩子", "娃", "宝宝", "儿子", "女儿", "小朋友"]),
+    ("👨 👩 👧 👦 亲子家庭", ["亲子", "一家三口", "一家四口", "全家", "一家人"]),
+    ("👯 朋友结伴", ["朋友", "同学", "闺蜜", "兄弟", "伙伴"]),
+    ("👨 💻 公司团建", ["团建", "公司", "部门", "同事"]),
+    ("🐶 携带宠物", ["宠物", "狗", "猫", "毛孩子"]),
+    ("🤰 孕妇", ["怀孕", "孕妇", "孕期", "准妈妈"]),
+    ("♿ 需要无障碍设施", ["轮椅", "无障碍", "行动不便"]),
+]
+_PREFERENCE_KEYS: list[tuple[str, list[str]]] = [
+    ("🚶 少走路/休闲游", ["少走路", "休闲", "轻松", "慢一点", "节奏慢", "不赶", "躺平", "度假"]),
+    ("🏛️ 室内为主", ["室内", "博物馆", "展览", "美术馆", "避雨", "下雨"]),
+    ("📸 出片率高", ["拍照", "出片", "网红", "摄影", "机位", "好看的照片"]),
+    ("🍲 美食打卡", ["吃", "美食", "小吃", "餐厅", "菜", "馆子", "夜宵", "烧烤", "馆子"]),
+    ("🏔️ 户外自然", ["山", "湖", "海", "森林", "草原", "徒步", "爬山", "自然", "露营", "日出", "星空"]),
+    ("🎢 特种兵拉练", ["特种兵", "密集", "拉练", "赶一赶", "一天多个"]),
+    ("🛍️ 购物逛街", ["购物", "逛街", "买买买", "免税", "奥特莱斯", "商圈"]),
+    ("🎭 文化历史", ["历史", "文化", "古迹", "古镇", "古城", "老建筑", "非遗", "寺庙", "园林"]),
+]
+_FIXED_FESTIVALS = {"元旦": (1, 1), "五一": (5, 1), "劳动节": (5, 1), "国庆": (10, 1), "十一": (10, 1)}
+_WEEKDAYS = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+
+
+def _cn_int(token: str) -> int | None:
+    """把「8 / 八 / 十二 / 二十」这类写成整数；看不懂返回 None。"""
+    token = str(token or "").strip()
+    if token.isdigit():
+        return int(token)
+    if token == "十":
+        return 10
+    if "十" in token:
+        head, _, tail = token.partition("十")
+        return _CN_DIGITS.get(head, 1) * 10 + (_CN_DIGITS.get(tail, 0) if tail else 0)
+    return _CN_DIGITS.get(token)
+
+
+def _money(token: str, unit: str) -> float | None:
+    value = _cn_int(token)
+    if value is None:
+        return None
+    return value * _UNIT_MULT.get(unit, 1)
+
+
+def _pick_name(text: str, table: dict[str, Any]) -> Any | None:
+    """按别名长度从长到短匹配，避免「浙江」抢在「浙江省」前面、「蒙古」抢在「内蒙古」前面。"""
+    for alias in sorted(table, key=len, reverse=True):
+        if len(alias) >= 2 and alias in text:
+            return table[alias]
+    return None
+
+
+def _parse_start(text: str, today: date) -> date | None:
+    """出发日期：X月Y日 / 明天后天 / 下周几 / 国庆五一元旦。"""
+    m = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?", text)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            year = today.year + 1 if (month, day) < (today.month, today.day) else today.year
+            try:
+                return date(year, month, day)
+            except ValueError:
+                return None
+    for word, offset in (("大后天", 3), ("后天", 2), ("明天", 1), ("今天", 0)):
+        if word in text:
+            return today + timedelta(days=offset)
+    m = re.search(r"(?:下|这|本)?\s*(?:周|星期|礼拜)([一二三四五六日天])", text)
+    if m:
+        target = _WEEKDAYS[m.group(1)]
+        delta = (target - today.weekday()) % 7 or 7
+        if "下" in text:
+            delta += 7 if (target - today.weekday()) % 7 else 0
+        return today + timedelta(days=delta)
+    for word, (month, day) in _FIXED_FESTIVALS.items():
+        if word in text:
+            year = today.year if (month, day) >= (today.month, today.day) else today.year + 1
+            return date(year, month, day)
+    return None
+
+
+def _parse_dates(text: str, today: date) -> tuple[date | None, date | None]:
+    """X月Y日 出现两次就当成「几号到几号」，第二次是返程；只出现一次就只定出发。"""
+    pairs: list[tuple[int, int]] = []
+    month: int | None = None
+    for found in re.finditer(r"(?:(\d{1,2})\s*月)?\s*(\d{1,2})\s*[日号]", text):
+        if found.group(1):
+            month = int(found.group(1))
+        day = int(found.group(2))
+        if month and 1 <= month <= 12 and 1 <= day <= 31:
+            pairs.append((month, day))
+    if not pairs:
+        return _parse_start(text, today), None
+
+    parsed: list[date] = []
+    for mon, day in pairs:
+        ref = parsed[-1] if parsed else today
+        year = ref.year + 1 if (mon, day) < (ref.month, ref.day) else ref.year
+        try:
+            parsed.append(date(year, mon, day))
+        except ValueError:
+            continue
+    if not parsed:
+        return _parse_start(text, today), None
+    return parsed[0], parsed[1] if len(parsed) > 1 else None
+
+
+def parse_plan_text(text: str) -> dict[str, Any]:
+    """规则解析：只返回这句话里确实说到的字段，没说的键不出现（增量覆盖靠调用方）。"""
+    raw = str(text or "").strip()
+    found: dict[str, Any] = {}
+    if not raw:
+        return found
+
+    place = _pick_name(raw, _CITY_ALIAS)
+    if place and place[2]:
+        found["country"], found["province"], found["city"] = place
+    else:
+        prov = _pick_name(raw, _PROV_ALIAS)
+        if prov:
+            found["country"], found["province"] = prov
+
+    m = re.search(rf"{_NUM}\s*(?:天|晚|日游)", raw)
+    if m:
+        days = _cn_int(m.group(1))
+        if days:
+            found["days"] = max(1, days)
+    elif "一日游" in raw:
+        found["days"] = 1
+
+    m = re.search(rf"人均\s*{_NUM}\s*(万|千|w|k)?", raw)
+    if m:
+        found["per_person"] = _money(m.group(1), m.group(2) or "")
+    m = re.search(rf"(?:预算|花费|费用|每人|人均)?\s*(?:不超过|控制在|大概|约)?\s*{_NUM}\s*(万|千|w|k)?\s*(?:元|块|块钱)", raw)
+    if m and found.get("per_person") is None:
+        found["budget"] = _money(m.group(1), m.group(2) or "")
+    m = re.search(rf"预算\s*{_NUM}\s*(万|千|w|k)?", raw)
+    if m and found.get("per_person") is None:
+        found["budget"] = _money(m.group(1), m.group(2) or "")
+
+    m = re.search(rf"{_NUM}\s*(?:个人|人(?!均)|位|个(?:人|朋友|同学|伙伴))", raw)
+    if m:
+        people = _cn_int(m.group(1))
+        if people:
+            found["people"] = max(1, people)
+    if "一家三口" in raw:
+        found["people"] = 3
+    if "一家四口" in raw:
+        found["people"] = 4
+
+    start, end = _parse_dates(raw, date.today())
+    if start:
+        found["start"] = start
+    if end:
+        found["end"] = end
+
+    picked = [opt for opt, keys in _COMPANION_KEYS if any(word in raw for word in keys)]
+    if picked:
+        found["companions"] = picked
+    picked = [opt for opt, keys in _PREFERENCE_KEYS if any(word in raw for word in keys)]
+    if picked:
+        found["prefs"] = picked
+    return found
+
+
+_LLM_PARSE_HINT = (
+    "你是旅行需求解析器，把用户的口语需求抽成 JSON，只输出 JSON 本身。"
+    "字段：city(城市名)、province(省份名)、days(整数天数)、people(整数人数)、"
+    f"budget(总预算数字，人民币)、per_person(人均预算数字)、start_date(YYYY-MM-DD)、"
+    f"companions(数组，只能取：{'、'.join(COMPANION_LABELS)})、"
+    f"preferences(数组，只能取：{'、'.join(PREFERENCE_LABELS)})。"
+    "用户没说的字段一律填 null，不要替人猜；相对日期请换算成具体日期。"
+)
+
+
+def _llm_plan(text: str) -> dict[str, Any] | None:
+    """让 DeepSeek 补规则解析漏掉的说法；没配密钥或失败就返回 None，规则结果照常生效。"""
+    if not config.DEEPSEEK_API_KEY:
+        return None
+    try:
+        message, _ = llm.chat(
+            [
+                {"role": "system", "content": f"{_LLM_PARSE_HINT} 今天是 {date.today().isoformat()}。"},
+                {"role": "user", "content": text},
+            ],
+            temperature=0.0,
+            max_tokens=300,
+        )
+        body = re.search(r"\{.*\}", str(message.get("content") or ""), re.S)
+        if not body:
+            return None
+        data = json.loads(body.group(0))
+    except Exception:  # noqa: BLE001 - 解析失败退回规则结果，不打断对话
+        return None
+
+    found: dict[str, Any] = {}
+    if data.get("city"):
+        city = str(data["city"])
+        country, province = _locate_city(city)
+        found["country"], found["province"], found["city"] = country, province, city
+    elif data.get("province"):
+        hit = _pick_name(str(data["province"]), _PROV_ALIAS)
+        if hit:
+            found["country"], found["province"] = hit
+    for key in ("days", "people", "budget", "per_person"):
+        value = data.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            found[key] = float(value) if key == "budget" else int(value)
+    raw_date = str(data.get("start_date") or "")
+    if len(raw_date) == 10:
+        try:
+            found["start"] = date.fromisoformat(raw_date)
+        except ValueError:
+            pass
+    companions = [_companion_option(tag) for tag in (data.get("companions") or [])]
+    if any(companions):
+        found["companions"] = [c for c in companions if c]
+    prefs = [_preference_option(tag) for tag in (data.get("preferences") or [])]
+    if any(prefs):
+        found["prefs"] = [p for p in prefs if p]
+    return found or None
+
+
+def _merge_plan(rule: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
+    """规则结果打底，模型结果补空缺；两边都提到的取模型（它更懂上下文），列表取并集。"""
+    merged = dict(rule)
+    for key, value in (model or {}).items():
+        if isinstance(value, list):
+            merged[key] = list(dict.fromkeys(list(merged.get(key) or []) + value))
+        elif key not in merged:
+            merged[key] = value
+    return merged
+
+
+def _patch_state(found: dict[str, Any]) -> None:
+    """把解析结果增量写进 f_* 状态（只能在控件实例化前调用）。"""
+    if not found:
+        return
+    today = date.today()
+    if found.get("city"):
+        country, province = found.get("country"), found.get("province")
+        if not (country and province):
+            country, province = _locate_city(found["city"])
+        st.session_state["f_country"] = country
+        st.session_state["f_province"] = province
+        st.session_state["f_city"] = found["city"]
+    elif found.get("province"):
+        st.session_state["f_country"] = found["country"]
+        st.session_state["f_province"] = found["province"]
+        st.session_state["f_city"] = UNLIMITED_CITY
+
+    people = found.get("people") or st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"])
+    if found.get("per_person"):
+        st.session_state["f_budget"] = int(round(float(found["per_person"]) * max(1, int(people))))
+    elif found.get("budget"):
+        st.session_state["f_budget"] = int(round(float(found["budget"])))
+    if found.get("people"):
+        st.session_state["f_people"] = int(found["people"])
+
+    days = found.get("days")
+    start = found.get("start")
+    end = found.get("end")
+    if start:
+        st.session_state["f_start"] = start
+    if end:
+        st.session_state["f_end"] = end
+    elif days and start:
+        st.session_state["f_end"] = start + timedelta(days=int(days) - 1)
+    elif days and isinstance(st.session_state.get("f_start"), date):
+        st.session_state["f_end"] = st.session_state["f_start"] + timedelta(days=int(days) - 1)
+
+    for index, option in enumerate(COMPANION_OPTIONS):
+        key = f"f_companions_{index}"
+        if option in (found.get("companions") or []):
+            st.session_state[key] = True
+    for index, option in enumerate(PREFERENCE_OPTIONS):
+        key = f"f_prefs_{index}"
+        if option in (found.get("prefs") or []):
+            st.session_state[key] = True
+
+
+def _state_snapshot() -> dict[str, Any]:
+    """控件还没渲染时，从 session_state 读出一份当前约束用于复述。"""
+    start = st.session_state.get("f_start")
+    end = st.session_state.get("f_end")
+    days = _span_days(start, end) if isinstance(start, date) and isinstance(end, date) else 0
+    return {
+        "country": st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"]),
+        "province": st.session_state.get("f_province", CONSTRAINT_DEFAULTS["province"]),
+        "city": st.session_state.get("f_city", CONSTRAINT_DEFAULTS["city"]),
+        "start": start,
+        "end": end,
+        "days": days,
+        "people": st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"]),
+        "budget": st.session_state.get("f_budget", CONSTRAINT_DEFAULTS["budget"]),
+        "companions": _current_group("f_", "companions", COMPANION_OPTIONS),
+        "prefs": _current_group("f_", "prefs", PREFERENCE_OPTIONS),
+        "request": st.session_state.get("f_request", CONSTRAINT_DEFAULTS["request"]),
+    }
+
+
+def _reply_text(found: dict[str, Any], snapshot: dict[str, Any], *, used_model: bool) -> str:
+    """管家复述：把「我听懂了什么」和「还差什么」一次说清，用户只管纠正。"""
+    city = snapshot["city"]
+    lines: list[str] = []
+    if city and city != UNLIMITED_CITY:
+        where = f"**{city}**（{snapshot['province']}）"
+    elif snapshot["province"] != UNLIMITED_PROVINCE:
+        where = f"**{snapshot['province']}**，城市还没定"
+    else:
+        where = "全国范围，目的地还没定"
+    lines.append(f"- 去哪：{where}")
+    if snapshot["days"]:
+        lines.append(
+            f"- 时间：{snapshot['start']:%m月%d日} 出发，玩 {snapshot['days']} 天"
+            f"（{snapshot['end']:%m月%d日} 返程）"
+        )
+    else:
+        lines.append("- 时间：还没定，先按默认日期占位")
+    people = int(snapshot["people"] or 0)
+    budget = float(snapshot["budget"] or 0)
+    per = f"，人均约 {budget / people:.0f}" if people and budget else ""
+    lines.append(f"- 人数与预算：{people} 人 · 总预算 {budget:.0f} 元{per}")
+    tags = [t.split(" ", 1)[1] if " " in t else t for t in snapshot["companions"]]
+    lines.append(f"- 同行人：{'、'.join(tags)}" if tags else "- 同行人：还没说（默认按 2 人成人安排）")
+    prefs = [t.split(" ", 1)[1] if " " in t else t for t in snapshot["prefs"]]
+    lines.append(f"- 偏好：{'、'.join(prefs)}" if prefs else "- 偏好：还没提到")
+
+    gaps: list[str] = []
+    if not city or city == UNLIMITED_CITY:
+        gaps.append("具体城市")
+    if not found.get("start"):
+        gaps.append("出发日期")
+    if not found.get("days"):
+        gaps.append("玩几天")
+    tail = f"还差点信息：{'、'.join(gaps)}。" if gaps else "条件齐了，可以直接开始规划。"
+    who = "我让模型又核了一遍，" if used_model and config.DEEPSEEK_API_KEY else ""
+    return (
+        "好的，" + who + "我按这样理解：\n\n"
+        + "\n".join(lines)
+        + f"\n\n{tail}要改就直接说（例如「预算改成 6000」「带上爸妈」），"
+        "或者点「精确设置」逐项勾。"
+    )
+
+
+def _chat_log() -> list[dict[str, str]]:
+    log = st.session_state.setdefault("chat_log", [])
+    if not log:
+        log.append({"role": "assistant", "content": CHAT_GREETING})
+    return log
+
+
+def apply_pending_chat() -> None:
+    """消费上一轮暂存的对话：解析 -> 写回条件 -> 生成管家回复（必须在控件实例化前）。"""
+    text = st.session_state.pop("_pending_chat", None)
+    if not text:
+        return
+    log = _chat_log()
+    log.append({"role": "user", "content": str(text)})
+
+    rule = parse_plan_text(str(text))
+    model = _llm_plan(str(text))
+    found = _merge_plan(rule, model)
+    _patch_state(found)
+
+    lines = st.session_state.setdefault("ask_lines", [])
+    lines.append(str(text))
+    st.session_state["f_request"] = "；".join(lines[-3:])
+
+    log.append({"role": "assistant", "content": _reply_text(found, _state_snapshot(), used_model=bool(model))})
+
+
 def render_sidebar() -> tuple[dict[str, Any], str, bool]:
     with st.sidebar:
-        st.header("行程约束")
+        st.header("🧭 旅行管家")
         hint = st.session_state.pop("_preset_hint", None)
         if hint:
             st.caption(f"已套用示例：{hint}")
 
-        payload = _constraint_fields("f_")
+        for message in _chat_log()[-10:]:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
         run_clicked = full_width_button("开始规划", kind="primary")
+        with popover_or_expander("⚙️ 精确设置（不想打字就点这个）"):
+            payload = _constraint_fields("f_")
+        said = st.chat_input(
+            "一句话说说你的出行计划，例如：10月15号和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜"
+        )
+        if said:
+            # 控件本轮已实例化，改状态只能等下一次运行，所以先暂存再 rerun
+            st.session_state["_pending_chat"] = said
+            st.rerun()
     return payload, payload["request"], run_clicked
+
 
 
 # ---------------------------------------------------------------------------
@@ -3041,6 +3832,7 @@ def main() -> None:
     setup_detail_log()
     apply_pending_constraints()
     apply_pending_preset()
+    apply_pending_chat()
 
     # 全局 Header 已下线：品牌名收进空状态页，避免顶部黑边与强制标题
     missing = config.require_keys()
@@ -3061,6 +3853,11 @@ def main() -> None:
     if rerun_request is not None:
         run_clicked = True
         request = str(rerun_request)
+
+    # 卡片上点「套用这个行程」：条件已在顶部写回，这里直接开跑，不再多按一次按钮
+    if st.session_state.pop("_run_preset", False):
+        run_clicked = True
+        request = payload["request"]
 
     if run_clicked and not str(payload.get("city") or "").strip():
         st.warning("请先在左侧把「城市」选成具体城市，再开始规划。")
