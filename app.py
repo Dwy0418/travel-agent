@@ -784,6 +784,180 @@ section[data-testid="stSidebar"] [data-testid="stCheckbox"] p {
     font-size: 12.5px;
     line-height: 1.35;
 }
+
+/* ==========================================================================
+   精装修 V2：层次 / 留白 / 卡片质感 / 色彩焦点 / 光晕
+   仅做视觉覆盖，放在最后，不改动任何下拉框级联或业务逻辑。
+   ========================================================================== */
+
+/* ---------- 维度一：背景与层次 ---------- */
+.stApp {
+    background:
+        radial-gradient(1100px 560px at 14% -8%, rgba(59, 130, 246, 0.14), transparent 62%),
+        radial-gradient(900px 480px at 86% -2%, rgba(139, 92, 246, 0.14), transparent 58%),
+        #0B1120 !important;
+}
+
+/* 侧边栏：悬浮感（右侧柔和投影，而非生硬切一刀） */
+section[data-testid="stSidebar"] {
+    background: #101A2E !important;
+    border-right: none !important;
+    box-shadow: 14px 0 36px -14px rgba(2, 6, 23, 0.90),
+                1px 0 0 rgba(148, 163, 184, 0.08) !important;
+    backdrop-filter: blur(16px);
+}
+
+/* 输入框：半透明磨砂 + 极细暗边，hover / focus 才发光 */
+div[data-baseweb="input"],
+div[data-baseweb="textarea"],
+div[data-baseweb="select"] > div,
+div[data-testid="stNumberInputContainer"] {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(148, 163, 184, 0.16) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+div[data-baseweb="input"]:hover,
+div[data-baseweb="textarea"]:hover,
+div[data-baseweb="select"] > div:hover,
+div[data-testid="stNumberInputContainer"]:hover {
+    background: rgba(255, 255, 255, 0.075) !important;
+    border-color: rgba(148, 163, 184, 0.30) !important;
+}
+div[data-baseweb="input"]:focus-within,
+div[data-baseweb="textarea"]:focus-within,
+div[data-baseweb="select"] > div:focus-within,
+div[data-testid="stNumberInputContainer"]:focus-within,
+div[data-testid="stNumberInputContainer"]:has(input:focus) {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border-color: #3B82F6 !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22) !important;
+}
+
+/* ---------- 维度二：排版与留白 ---------- */
+.hero {
+    position: relative;
+    padding: 96px 12px 46px 12px;
+    margin-bottom: 10px;
+}
+.hero-title {
+    font-size: 50px;
+    margin: 0 0 8px 0;
+}
+.hero-sub {
+    font-size: 13.5px;
+    color: #7C8CA3;
+    opacity: 0.92;
+    line-height: 1.9;
+    margin: 16px auto 0 auto;
+}
+
+/* 侧边栏分组标题：放大加粗 + 下方留白，与控件分离 */
+section[data-testid="stSidebar"] .sec-title {
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+    color: #BFDBFE;
+    margin: 28px 0 12px 0;
+    text-transform: none;
+}
+section[data-testid="stSidebar"] hr.sec-line {
+    margin: 10px 0 6px 0;
+}
+section[data-testid="stSidebar"] .field-label {
+    margin: 16px 0 6px 0;
+}
+/* 侧边栏小字提示（同行人下方等）整齐对齐 */
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+section[data-testid="stSidebar"] small {
+    display: block;
+    line-height: 1.75;
+    margin-top: 6px;
+    padding-left: 2px;
+    color: #8A9AB0;
+}
+
+/* ---------- 维度三：示例卡片质感 ---------- */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) {
+    background: #1E293B !important;
+    border: 1px solid rgba(148, 163, 184, 0.10) !important;
+    border-radius: 12px !important;
+    padding: 18px 16px 14px 16px;
+    box-shadow: 0 6px 18px rgba(2, 6, 23, 0.45);
+    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1),
+                box-shadow 0.22s ease, border-color 0.22s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title):hover {
+    transform: translateY(-4px);
+    border-color: rgba(139, 92, 246, 0.42) !important;
+    box-shadow: 0 14px 34px rgba(59, 130, 246, 0.26),
+                0 0 0 1px rgba(139, 92, 246, 0.20);
+}
+.preset-icon {
+    font-size: 32px;
+    filter: drop-shadow(0 6px 16px rgba(139, 92, 246, 0.35));
+}
+.preset-title {
+    font-size: 16.5px;
+    margin: 8px 0 4px 0;
+    color: #F1F5F9;
+}
+
+/* 卡片内按钮 → 幽灵按钮（透明底 + 主色描边），hover 反色填充 */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > button {
+    background: transparent !important;
+    border: 1px solid rgba(139, 92, 246, 0.55) !important;
+    border-radius: 9px;
+    color: #C4B5FD !important;
+    font-weight: 600;
+    box-shadow: none;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > button:hover {
+    background: linear-gradient(90deg, #3B82F6, #8B5CF6) !important;
+    border-color: transparent !important;
+    color: #FFFFFF !important;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+}
+
+/* ---------- 维度四：色彩焦点强化 ---------- */
+.stButton > button[kind="primary"] {
+    background: linear-gradient(90deg, #3B82F6 0%, #6366F1 52%, #8B5CF6 100%) !important;
+    border: none !important;
+    border-radius: 11px !important;
+    color: #FFFFFF !important;
+    font-size: 15.5px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    padding: 0.72rem 1rem;
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.40);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+}
+.stButton > button[kind="primary"]:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+    box-shadow: 0 8px 26px rgba(99, 102, 241, 0.52);
+}
+
+/* ---------- 维度五：标题光晕 ---------- */
+.hero::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 14px;
+    width: 640px;
+    height: 330px;
+    transform: translateX(-50%);
+    background: radial-gradient(closest-side,
+                rgba(99, 102, 241, 0.30),
+                rgba(59, 130, 246, 0.12) 55%,
+                transparent 78%);
+    filter: blur(8px);
+    pointer-events: none;
+    z-index: 0;
+}
+.hero-title, .hero-sub { position: relative; z-index: 1; }
 </style>
 """
 
