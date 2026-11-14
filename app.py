@@ -422,10 +422,10 @@ div[data-testid="stMetric"] {
 }
 div[data-testid="stMetricValue"] { color: #F8FAFC !important; }
 
-/* 首屏 Empty State */
+/* 首屏 Empty State —— 承担品牌主视觉（已取代全局大标题） */
 .hero {
     text-align: center;
-    padding: 40px 12px 18px 12px;
+    padding: 72px 12px 30px 12px;
 }
 .hero-icon {
     font-size: 64px;
@@ -433,15 +433,24 @@ div[data-testid="stMetricValue"] { color: #F8FAFC !important; }
     filter: drop-shadow(0 8px 22px rgba(139, 92, 246, 0.45));
 }
 .hero-title {
-    font-size: 34px;
-    font-weight: 800;
-    margin-top: 12px;
-    background: linear-gradient(90deg, #93C5FD, #C4B5FD);
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    line-height: 1.18;
+    margin: 0;
+    background: linear-gradient(96deg, #DBEAFE 0%, #93C5FD 38%, #C4B5FD 72%, #F0ABFC 100%);
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 6px 20px rgba(139, 92, 246, 0.28));
 }
-.hero-sub { color: #94A3B8; font-size: 14px; margin-top: 6px; }
+.hero-sub {
+    color: #94A3B8;
+    font-size: 14.5px;
+    line-height: 1.85;
+    max-width: 660px;
+    margin: 14px auto 0 auto;
+}
 .preset-icon { font-size: 30px; line-height: 1.2; }
 .preset-title {
     font-size: 16px;
@@ -927,12 +936,12 @@ def apply_pending_preset() -> None:
 
 
 def render_empty_state() -> None:
-    """首屏视觉中心 + 3 张示例卡片。"""
+    """首屏视觉中心：Agent 身份 + 3 张示例卡片（取代全局大标题）。"""
     st.markdown(
         "<div class='hero'>"
-        "<div class='hero-icon'>🌏</div>"
-        "<div class='hero-title'>准备去哪里探索？</div>"
-        "<div class='hero-sub'>填好左侧约束点「开始规划」，或直接套用一个示例旅程</div>"
+        "<div class='hero-title'>✈️ 旅游规划助手</div>"
+        "<div class='hero-sub'>我是您的贴心旅行管家，请告诉我您的需求，"
+        "或者直接选择下方的一个示例开启旅程吧！</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1857,9 +1866,7 @@ def main() -> None:
     apply_pending_preset()
     inject_css()
 
-    st.title(zh_labels.APP_TITLE)
-    st.caption(zh_labels.APP_CAPTION)
-
+    # 全局 Header 已下线：品牌名收进空状态页，避免顶部黑边与强制标题
     missing = config.require_keys()
     if missing:
         st.warning(
