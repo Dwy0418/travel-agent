@@ -586,17 +586,25 @@ def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
 # ---------------------------------------------------------------------------
 # 全屏动态背景：多张高清图交叉淡入淡出，随目的地三级联动换图组
 # ---------------------------------------------------------------------------
-# 图源全部复用 IMG 里已按行程文案校对过的 Unsplash 直链，只从中挑「适合铺满整屏」
-# 的外景（地标 / 山水 / 海岸），不新增未校对的 photo id，避免出现「选成都、放罗马」
-# 这类错配，也不会因为图链失效而露出底色。
-BG_SLIDES = 4                  # 每组背景轮播几张
+# 注入分两段，这是「切换时渐变、rerun 时不打断」的关键：
+#   骨架 background_layers_html() 字节恒定（两组图层 × 每组四张），内容不变时
+#     Streamlit 不重发该元素，图层不销毁重建，轮播的动画时钟就一直走着；
+#   样式 background_style_html() 只随图组 / 页面模式变化，换目的地时把新图写进
+#     另一组图层并淡入，旧组保持原样淡出，两组之间是渐变过渡而不是硬切。
+# 图源 bg_library.json：目的地树里每个省、每个市各配 4 张 Unsplash 免版权外景，
+# 取自该地名的搜索结果，已剔除竖构图、Unsplash+ 付费图和街拍 / 美食特写。
+BG_SLIDES = 4                  # 每组轮播几张，骨架里的图层数固定为这个值
 BG_HOLD = 9.0                  # 单张占位秒数（含淡入淡出），4 张约 36 秒一轮
-BG_FADE = 3.0                  # 相邻两张交叉淡化的秒数
+BG_FADE = 3.0                  # 组内相邻两张交叉淡化的秒数
 BG_ZOOM = (1.03, 1.09)         # 每张在本窗口内的轻微推近，模拟镜头流动感
+BG_CROSS = 1.8                 # 换图组时两组之间互相淡化的秒数
+BG_CROSS_LAG = 0.7             # 旧图组多顶这么久再开始淡出，给新图留出下载时间
+BG_STAGES = 2                  # 交替使用的两组图层：一组淡出的同时另一组淡入
+BG_CYCLE = BG_HOLD * BG_SLIDES # 周期固定，关键帧与图组无关，可以写死在全局 CSS 里
 
 # 城市 -> 背景用图（IMG 的 key），顺序即轮播顺序。
-# 逐张核对过实际画面：只留外景 / 地标，室内展陈与美食特写不进背景组，
-# 文案与画面对不上的（mz2 湖心亭、gz6 草原、xa2 海滨天际线等）也一并剔除。
+# 这 11 座城的图是按行程文案逐张核对过的（mz2 湖心亭、gz6 草原、xa2 海滨天际线
+# 这类图文不符的都已剔除），优先级高于 bg_library.json，让卡片和背景说的是同一件事。
 BG_CITY_KEYS: dict[str, list[str]] = {
     "梅州市": ["mz1", "mz3", "mz4"],              # 老墙 / 茶田 / 灯笼古街
     "广州市": ["gz2", "gz5", "gz4"],              # 广州塔 / 珠江夜景 / 沙面洋房
@@ -615,46 +623,86 @@ BG_CITY_KEYS: dict[str, list[str]] = {
 BG_NATIONAL_KEYS = ["bj2", "hz1", "dl1", "gzz1"]  # 长城 / 西湖 / 洱海 / 川西
 
 
+def _load_bg_library() -> dict[str, list[str]]:
+    """读入「目的地 -> 4 个 Unsplash photo id」图库；文件缺失或读坏就退回内置表。"""
+    path = Path(__file__).resolve().parent / "bg_library.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {
+        name: [pid for pid in photos if isinstance(pid, str)]
+        for name, photos in data.items()
+        if isinstance(photos, list) and photos
+    }
+
+
+BG_LIBRARY = _load_bg_library()
+
+
 def _bg_url(key: str) -> str:
     """卡片图是 900 宽，背景要铺满整屏，同一张图升到 1920 宽。"""
     return IMG[key].replace("w=900", "w=1920")
 
 
-def _city_bg_keys(city: str) -> list[str]:
-    """该城的背景候选：优先用校对过的外景表，没收录就退回卡片图顺序。"""
-    if city in BG_CITY_KEYS:
-        return BG_CITY_KEYS[city]
-    return [row[1] for row in RAW.get(city, [])]
+def _bg_photo_url(photo: str) -> str:
+    """bg_library.json 里存的是 photo id，拼成铺满整屏的直链。"""
+    return f"https://images.unsplash.com/{photo}?q=80&w=1920&auto=format&fit=crop"
+
+
+def _bg_urls(name: str) -> list[str]:
+    """某个省 / 市的专属图组：内置校对表 > 图库 > 该城卡片外景。"""
+    if name in BG_CITY_KEYS:
+        return [_bg_url(k) for k in BG_CITY_KEYS[name]]
+    if name in BG_LIBRARY:
+        return [_bg_photo_url(p) for p in BG_LIBRARY[name]]
+    if name in RAW:
+        return [_bg_url(row[1]) for row in RAW[name]]
+    return []
+
+
+def _bg_pad(urls: list[str], extra: list[str]) -> list[str]:
+    """骨架固定 BG_SLIDES 个图层：不足 BG_SLIDES 张时先用上层（省 / 全国）的图补，
+    补不齐才重复本组自己的图，保证任何时刻都有画面、组与组之间也不会撞图。"""
+    pool: list[str] = []
+    for u in urls + extra:
+        if len(pool) >= BG_SLIDES:
+            break
+        if u not in pool:
+            pool.append(u)
+    while len(pool) < BG_SLIDES and urls:
+        pool.append(urls[len(pool) % len(urls)])
+    return pool
+
+
+def _bg_mix(country: str, province: str) -> list[str]:
+    """图库没收录这个省时，把省内各城轮着拼一份，画面至少还属于本省。"""
+    groups = [g for g in (_bg_urls(one)
+              for one in DESTINATION_TREE.get(country, {}).get(province, [])) if g]
+    return _interleave(groups, BG_SLIDES * 2) if groups else []
 
 
 def _bg_group() -> tuple[list[str], str]:
-    """按 城市 -> 省份 -> 全国 逐级挑背景，返回 (IMG key 列表, 范围名)。
-
-    「其他国家 / 地区」还没有校对过的图源，暂时落到全国池；补上 IMG 后自动生效。
-    """
+    """按 城市 -> 省份 -> 全国 逐级取专属背景，返回 (图组 URL 列表, 范围名)。"""
     country = st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"])
     province = str(st.session_state.get("f_province", "") or "")
     city = str(st.session_state.get("f_city", "") or "")
+    national = [_bg_url(k) for k in BG_NATIONAL_KEYS]
+    in_prov = province and province != UNLIMITED_PROVINCE
+    prov_urls = _bg_urls(province) if in_prov else []
+    prov_mix = _bg_mix(country, province) if in_prov else []
+    province_pool = _bg_pad(prov_urls or prov_mix, national) if in_prov else []
 
     if city and city != UNLIMITED_CITY:
-        keys = _city_bg_keys(city)
-        if keys:
-            return keys[:BG_SLIDES], city
+        urls = _bg_urls(city)
+        if urls:
+            return _bg_pad(urls, province_pool + national), city
 
-    if province and province != UNLIMITED_PROVINCE:
-        groups = [
-            g
-            for g in (
-                _city_bg_keys(one)
-                for one in DESTINATION_TREE.get(country, {}).get(province, [])
-            )
-            if g
-        ]
-        if groups:
-            return _interleave(groups, BG_SLIDES), province
+    if in_prov:
+        return province_pool, province
 
     # 全国：直接用策划好的地标池，首屏就是「大好河山」，而不是某个城市的室内展
-    return BG_NATIONAL_KEYS, "全国"
+    return national, "全国"
 
 
 def _bg_alpha(t: float, center: float, cycle: float) -> float:
@@ -676,13 +724,13 @@ def _bg_scale(t: float, center: float, cycle: float) -> float:
     return lo + (hi - lo) * min(ratio, 1.0)
 
 
-def _bg_keyframes(idx: int, total: int) -> str:
+def _bg_keyframes(idx: int) -> str:
     """生成 tvbgN 关键帧。
 
     断点只取折线的拐点，浏览器线性插值即可还原整条曲线；时间按周期取模，
     首尾两张的淡化窗口跨 0 秒边界时会自动回绕，循环处不会出现黑帧或跳切。
     """
-    cycle = BG_HOLD * total
+    cycle = BG_CYCLE
     # 窗口中心落在 idx * BG_HOLD：首屏第 0 张正好处于全显平台期，不会以半透明开场
     center = idx * BG_HOLD
     edge, knee = (BG_HOLD + BG_FADE) / 2.0, (BG_HOLD - BG_FADE) / 2.0
@@ -699,32 +747,73 @@ def _bg_keyframes(idx: int, total: int) -> str:
     return f"@keyframes tvbg{idx}{{{body}}}"
 
 
-def background_html() -> str:
-    """背景层 HTML。
+def _bg_layer_css() -> str:
+    """两组共用的图层动画。周期与曲线都不依赖图组，随全局 CSS 注入一次即可。"""
+    stage = f".tv-bg-stage{{transition:opacity {BG_CROSS:.1f}s ease-in-out;}}"
+    runs = "".join(
+        f".tv-bg-s{i}{{animation:tvbg{i} {BG_CYCLE:.0f}s ease-in-out infinite;}}"
+        for i in range(BG_SLIDES)
+    )
+    return stage + runs + "".join(_bg_keyframes(i) for i in range(BG_SLIDES))
 
-    内容只随目的地级联变化：同一次选择下重复 rerun，这段字符串逐字节相同，
-    Streamlit 不会重发该元素，动画因此不会被重置回第一张。
+
+def background_layers_html() -> str:
+    """背景骨架：BG_STAGES 组 × BG_SLIDES 张图层，字节恒定。
+
+    这段文本永远不变，Streamlit 不会重发该元素，图层不被销毁重建，
+    轮播动画和组间淡化的时钟跨每一次 rerun 连续走，地址与透明度交给样式块。
     """
-    keys, scope = _bg_group()
-    total = len(keys)
-    cycle = BG_HOLD * total
-    frames, layers = [], []
-    for i, key in enumerate(keys):
-        anim = f"tvbg{i} {cycle:.1f}s ease-in-out infinite" if total > 1 else "none"
-        url = escape(_bg_url(key), quote=True)
-        layers.append(
-            f'<div class="tv-bg-img" style="background-image:url(&#x27;{url}&#x27;);'
-            f'animation:{anim};"></div>'
-        )
-        if total > 1:
-            frames.append(_bg_keyframes(i, total))
-    # 结果页要长时间读表格文字，背景再压一档；空状态页保持原亮度展示风光
+    imgs = "".join(f'<div class="tv-bg-img tv-bg-s{i}"></div>' for i in range(BG_SLIDES))
+    stages = "".join(
+        f'<div class="tv-bg-stage" data-stage="{s}">{imgs}</div>' for s in range(BG_STAGES)
+    )
+    return f'<div class="tv-bg" aria-hidden="true">{stages}<div class="tv-bg-mask"></div></div>'
+
+
+def background_style_html() -> str:
+    """当前图组落在哪一组、两组怎么交替淡化：这段只随图组 / 页面模式变化。
+
+    换组时只改写「另一组」的地址和相位，正在淡出的那组逐字节不变，
+    浏览器就不会重置它的动画——淡出的仍是它此刻正显示的那一张。
+    """
+    urls, scope = _bg_group()
+    sig = "|".join(urls)
     mode = "result" if st.session_state.get("result") else "form"
+
+    if st.session_state.get("bg_sig") != sig:
+        # 首屏落在第 0 组，之后每次换组都写到另一组上
+        stage = 0 if st.session_state.get("bg_sig") is None else 1 - int(st.session_state.get("bg_stage", 0))
+        st.session_state[f"bg_urls{stage}"] = urls
+        st.session_state[f"bg_seq{stage}"] = int(st.session_state.get(f"bg_seq{stage}", 0)) + 1
+        st.session_state["bg_stage"] = stage
+        st.session_state["bg_sig"] = sig
+    stage = int(st.session_state.get("bg_stage", 0))
+    st.session_state["bg_mode"] = mode
+
+    rules = []
+    for s in range(BG_STAGES):
+        active = s == stage
+        pool = st.session_state.get(f"bg_urls{s}") or []
+        # 负延迟按周期取模等于拨回 0 相位：新图组从第一张开始显示；
+        # 取值只在真正换组时变，同组内 rerun 逐字节相同，动画不被打断
+        delay = -BG_CYCLE * (int(st.session_state.get(f"bg_seq{s}", 0)) % 4)
+        rules.append(
+            f'.tv-bg-stage[data-stage="{s}"]{{opacity:{1 if active else 0};'
+            f'transition-delay:{0 if active else BG_CROSS_LAG}s;}}'
+        )
+        for i in range(BG_SLIDES):
+            img = f'background-image:url("{pool[i]}");' if i < len(pool) else ""
+            rules.append(
+                f'.tv-bg-stage[data-stage="{s}"] .tv-bg-s{i}'
+                f'{{{img}animation-delay:{delay:.1f}s;}}'
+            )
+    # 行程结果页要长时间读表格文字，背景再压一档；空状态页保持原亮度展示风光
+    dim, sat = ("0.55", "0.85") if mode == "result" else ("1", "1")
+    rules.append(f".tv-bg{{--bg-dim:{dim};--bg-sat:{sat};}}")
     return (
-        f'<div class="tv-bg" aria-hidden="true" data-mode="{mode}" '
-        f'data-scope="{escape(scope, quote=True)}">'
-        f'{"".join(layers)}<div class="tv-bg-mask"></div></div>'
-        f'<style>{"".join(frames)}</style>'
+        f'<div class="tv-bg-tag" data-scope="{escape(scope, quote=True)}" '
+        f'data-stage="{stage}" data-mode="{mode}"></div>'
+        f'<style>{"".join(rules)}</style>'
     )
 
 
@@ -741,12 +830,7 @@ GLOBAL_CSS = """
     color: #E2E8F0;
 }
 
-/* 2. 侧边栏：深色 + 右侧发光细边 */
-section[data-testid="stSidebar"] {
-    background: #1E293B !important;
-    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
-    border-right: 1px solid rgba(139, 92, 246, 0.22);
-}
+/* 2. 侧边栏配色见文件末尾的「磨砂玻璃」一节，这里只保证文字颜色 */
 section[data-testid="stSidebar"] * { color: #E2E8F0; }
 section[data-testid="stSidebar"] .sec-title {
     font-size: 13px;
@@ -1241,15 +1325,6 @@ html, body {
     background: transparent !important;
 }
 
-/* 侧边栏：悬浮感（右侧柔和投影，而非生硬切一刀） */
-section[data-testid="stSidebar"] {
-    background: #101A2E !important;
-    border-right: none !important;
-    box-shadow: 14px 0 36px -14px rgba(2, 6, 23, 0.90),
-                1px 0 0 rgba(148, 163, 184, 0.08) !important;
-    backdrop-filter: blur(16px);
-}
-
 /* 输入框：半透明磨砂 + 极细暗边，hover / focus 才发光 */
 div[data-baseweb="input"],
 div[data-baseweb="textarea"],
@@ -1508,14 +1583,6 @@ div[data-baseweb="calendar"], div[data-baseweb="calendar"] * {
     border-color: rgba(148, 163, 184, 0.16) !important;
 }
 
-/* 侧边栏：与主区轻微色差 + 一条极弱右分割线 */
-section[data-testid="stSidebar"] {
-    background: #111C31 !important;
-    border-right: none !important;
-    box-shadow: 1px 0 0 rgba(148, 163, 184, 0.10) !important;
-    backdrop-filter: none !important;
-}
-
 /* ---------- 二、增强诱惑力：卡片与幽灵按钮 ---------- */
 div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) {
     background: #1E293B !important;
@@ -1754,9 +1821,10 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
 }
 
 /* ==========================================================================
-   全屏动态背景：图片交叉淡入淡出 + 暗色遮罩
-   .tv-bg / .tv-bg-img 由 background_html() 按目的地级联生成，
-   每张图的动画名 tvbgN 与时长写在元素内联 style 上，这里只定公共样式。
+   全屏动态背景：图片轮播 + 组间交叉淡化 + 暗色遮罩
+   骨架 .tv-bg / .tv-bg-stage / .tv-bg-sN 由 background_layers_html() 恒定注入，
+   地址、透明度与图层相位由 background_style_html() 单独注入；
+   每张图的淡化曲线与轮播时长随 BG_* 常量生成，见下方占位符。
    ========================================================================== */
 .tv-bg {
     position: fixed;
@@ -1764,13 +1832,24 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
     z-index: -1;                       /* 沉到所有内容之下、html 深色底之上 */
     overflow: hidden;
     pointer-events: none;
+    --bg-dim: 1;                       /* 结果页由样式块压到 0.55，读表格时不抢注意力 */
+    --bg-sat: 1;
 }
+.tv-bg-stage {
+    position: absolute;
+    inset: 0;
+    opacity: 0;                        /* 哪一组在上由样式块的 opacity 决定 */
+}
+/* 换图组 = 两组图层互换透明度，所以是渐变过渡而不是硬切；旧组多顶 0.7 秒再淡出，
+   给新图留出下载时间，避免切换瞬间露出底色 */
+.tv-bg-stage[data-stage="0"] { opacity: 1; }
 .tv-bg-img {
     position: absolute;
     inset: 0;
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
+    filter: brightness(var(--bg-dim)) saturate(var(--bg-sat));
     will-change: opacity, transform;
 }
 /* 遮罩：整体压暗 + 四角渐深，再叠原品牌的蓝紫径向光晕与噪点，保证文字与卡片可读 */
@@ -1790,28 +1869,76 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
 .hero-title, .hero-sub, .rec-scope, .rec-tip {
     text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
 }
-/* 行程结果页：背景只当氛围，压暗降饱和，避免长时间读表格时被轮播抢注意力 */
-.tv-bg[data-mode="result"] .tv-bg-img {
-    filter: brightness(0.55) saturate(0.85);
-}
-/* 侧边栏改为半透明：背景的流动感能透出来，blur + 高墨底仍保证表单对比度 */
+/* 行程约束面板：半透明毛玻璃，让背景的风光透出来。墨底压到 0.5 以下仍可读，
+   靠的是 backdrop-filter 把身后的图组糊掉，而不是把面板涂实 */
 section[data-testid="stSidebar"] {
-    background: rgba(11, 17, 30, 0.78) !important;
-    backdrop-filter: blur(18px) saturate(115%);
+    background: rgba(10, 16, 30, 0.38) !important;
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border-right: 1px solid rgba(147, 197, 253, 0.16) !important;
+    box-shadow: 14px 0 36px -14px rgba(2, 6, 23, 0.55) !important;
+}
+/* 玻璃底上小字要有一圈投影，遇到亮天空才不糊 */
+section[data-testid="stSidebar"] .sec-title,
+section[data-testid="stSidebar"] .field-label,
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] span,
+section[data-testid="stSidebar"] p {
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+}
+/* 内层容器不能再铺一层实色，否则毛玻璃白做 */
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"],
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+    background: transparent !important;
+}
+/* 输入控件跟着改成磨砂：底色用半透明深蓝而不是透白，字在任何画面上都压得住 */
+section[data-testid="stSidebar"] div[data-baseweb="input"],
+section[data-testid="stSidebar"] div[data-baseweb="textarea"],
+section[data-testid="stSidebar"] div[data-testid="stNumberInputContainer"],
+section[data-testid="stSidebar"] div[data-testid="stDateInput"] > div,
+section[data-testid="stSidebar"] div[data-testid="stTextInput"] > div,
+section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+    background: rgba(9, 15, 28, 0.42) !important;
+    border: 1px solid rgba(148, 163, 184, 0.2) !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="input"]:hover,
+section[data-testid="stSidebar"] div[data-baseweb="textarea"]:hover,
+section[data-testid="stSidebar"] div[data-testid="stNumberInputContainer"]:hover,
+section[data-testid="stSidebar"] div[data-testid="stDateInput"] > div:hover,
+section[data-testid="stSidebar"] div[data-testid="stTextInput"] > div:hover,
+section[data-testid="stSidebar"] div[data-baseweb="select"] > div:hover {
+    background: rgba(9, 15, 28, 0.52) !important;
+    border-color: rgba(148, 163, 184, 0.32) !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="input"]:focus-within,
+section[data-testid="stSidebar"] div[data-baseweb="textarea"]:focus-within,
+section[data-testid="stSidebar"] div[data-testid="stNumberInputContainer"]:focus-within,
+section[data-testid="stSidebar"] div[data-testid="stDateInput"] > div:focus-within,
+section[data-testid="stSidebar"] div[data-testid="stTextInput"] > div:focus-within,
+section[data-testid="stSidebar"] div[data-baseweb="select"] > div:focus-within {
+    background: rgba(9, 15, 28, 0.58) !important;
+    border-color: rgba(59, 130, 246, 0.85) !important;
 }
 /* 用户偏好「减少动态效果」时，只保留当前图组的第一张，停掉轮播与推近 */
 @media (prefers-reduced-motion: reduce) {
     .tv-bg-img { animation: none !important; opacity: 0; }
-    .tv-bg-img:first-child { opacity: 1; }
+    .tv-bg-s0 { opacity: 1; }
 }
+__BG_LAYER_CSS__
 </style>
 """
+
+# 图层动画与关键帧只取决于 BG_* 常量，生成一次贴进全局 CSS，与图组内容无关
+GLOBAL_CSS = GLOBAL_CSS.replace("__BG_LAYER_CSS__", _bg_layer_css())
 
 
 def inject_css() -> None:
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
-    # 背景层紧跟 CSS 之后：它是正文第一个元素，内容不变时 rerun 不会重发，动画不被打断
-    st.markdown(background_html(), unsafe_allow_html=True)
+    # 骨架与样式分两段注入：骨架字节恒定，rerun 不重发、动画不被打断；
+    # 样式块只随图组变化，组与组之间靠 opacity 过渡完成渐变
+    st.markdown(background_layers_html(), unsafe_allow_html=True)
+    st.markdown(background_style_html(), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2914,7 +3041,6 @@ def main() -> None:
     setup_detail_log()
     apply_pending_constraints()
     apply_pending_preset()
-    inject_css()
 
     # 全局 Header 已下线：品牌名收进空状态页，避免顶部黑边与强制标题
     missing = config.require_keys()
@@ -2926,6 +3052,9 @@ def main() -> None:
         )
 
     payload, request, run_clicked = render_sidebar()
+    # 背景必须在侧栏之后注入：换省份时旧城市会被 _sync_select 重置，
+    # 早于侧栏读 session_state 就会拿到上一轮的失效城市，背景慢一整拍。
+    inject_css()
 
     # 结果页「调整条件」提交后，用同一套 payload 流程重算
     rerun_request = st.session_state.pop("_rerun_request", None)
