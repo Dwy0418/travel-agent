@@ -902,8 +902,12 @@ def _payload_to_state(payload: dict[str, Any]) -> None:
     ]
     st.session_state["f_request"] = payload.get("request", CONSTRAINT_DEFAULTS["request"])
     start = payload.get("start_date")
+    span = max(0, int(payload.get("days") or CONSTRAINT_DEFAULTS["days"]) - 1)
     if start:
-        st.session_state["f_start"] = date.fromisoformat(str(start))
+        start_day = date.fromisoformat(str(start))
+        st.session_state["f_start"] = start_day
+        # 回程日期：优先用显式传入的 end，否则按天数推算
+        st.session_state["f_end"] = payload.get("end") or (start_day + timedelta(days=span))
 
 
 def apply_pending_constraints() -> None:
@@ -1070,6 +1074,15 @@ def _date_bounds() -> tuple[date, date]:
     return shift(-5), shift(5)
 
 
+def _span_days(start_day: date, end_day: date) -> int:
+    """行程天数 = 回程 - 出发 + 1（含首尾），同日往返记 1 天。"""
+    try:
+        span = (end_day - start_day).days + 1
+    except (TypeError, AttributeError):
+        return CONSTRAINT_DEFAULTS["days"]
+    return max(1, span)
+
+
 def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> dict[str, Any]:
     """渲染三组约束控件，返回 payload。
 
@@ -1109,8 +1122,31 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         help="可选范围：今天往前 5 年到往后 5 年",
     )
 
-    seed_state(k("days"), base["days"])
-    days = st.slider("行程天数", 1, 7, key=k("days"))
+    # ---------------- 回程日期：天数由两个日期自动推算 ----------------
+    # 原先的「行程天数」滑块改为「回程日期」，天数 = 回程 - 出发 + 1。
+    end_key = k("end")
+    wanted_span = max(0, int(base.get("days") or CONSTRAINT_DEFAULTS["days"]) - 1)
+    fallback_end = min(start_date + timedelta(days=wanted_span), max_date)
+    if end_key not in st.session_state:
+        st.session_state[end_key] = base.get("end") or fallback_end
+    # 回程不得早于出发、也不得越出 5 年窗口；须在控件实例化前修正，否则越界报错
+    if st.session_state[end_key] < start_date:
+        st.session_state[end_key] = start_date
+    if st.session_state[end_key] > max_date:
+        st.session_state[end_key] = max_date
+    end_date = st.date_input(
+        "回程日期",
+        min_value=start_date,
+        max_value=max_date,
+        key=end_key,
+        help="与出发日期一起决定行程天数；可选范围同样为 5 年内",
+    )
+    days = _span_days(start_date, end_date)
+    nights = days - 1
+    st.caption(
+        f"共 {days} 天{' ' + str(nights) + ' 晚' if nights else ''} · "
+        f"{start_date:%m月%d日} 出发，{end_date:%m月%d日} 返程"
+    )
 
     # ---------------- 👥 人员与预算：取消上限 ----------------
     st.markdown("<hr class='sec-line'>", unsafe_allow_html=True)
@@ -1184,6 +1220,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         "people": int(people),
         "budget": float(budget),
         "start_date": start_date.isoformat(),
+        "end": end_date.isoformat(),
         "companions": plain_companions(companions),
         "preferences": pref_text,
         "preferences_list": list(preferences),
@@ -1680,6 +1717,7 @@ def render_adjust_panel() -> None:
         "pref_note": st.session_state.get("f_pref_note", CONSTRAINT_DEFAULTS["pref_note"]),
         "companions": _current_group("f_", "companions", COMPANION_OPTIONS),
         "start": st.session_state.get("f_start"),
+        "end": st.session_state.get("f_end"),
         "request": st.session_state.get("f_request", CONSTRAINT_DEFAULTS["request"]),
     }
     with popover_or_expander("✏️ 调整条件并重新规划"):
