@@ -958,6 +958,208 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > b
     z-index: 0;
 }
 .hero-title, .hero-sub { position: relative; z-index: 1; }
+
+/* ==========================================================================
+   V3 终极改造：去压迫感 / 放诱惑力 / 收敛光污染 / 引导 CTA
+   纯视觉覆盖，放在最后；不动任何级联、表单状态与业务逻辑。
+   ========================================================================== */
+
+/* ---------- 三、收敛光污染：统一 #0F172A，去掉上下色差 ---------- */
+.stApp {
+    background: #0F172A !important;
+}
+/* 干掉 V2 的紫色光晕 */
+.hero::before {
+    content: none !important;
+    display: none !important;
+    background: none !important;
+    filter: none !important;
+}
+/* 标题回归极简：纯白 / 亮银 加粗，无渐变无发光 */
+.hero-title {
+    background: none !important;
+    -webkit-background-clip: border-box !important;
+    background-clip: border-box !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    color: #FFFFFF !important;
+    filter: none !important;
+    text-shadow: none !important;
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    margin: 0 0 10px 0;
+}
+.hero-sub {
+    color: #8C9AAF !important;
+    opacity: 1;
+    font-size: 14px;
+    font-weight: 400;
+}
+
+/* ---------- 一、祛除压迫感：重塑输入框（去掉土黄/深色硬边框） ---------- */
+/* 覆盖所有可能的容器级选择器，避免任何版本留下硬边框 */
+div[data-baseweb="input"],
+div[data-baseweb="select"] > div,
+div[data-baseweb="textarea"],
+div[data-baseweb="base-input"],
+div[data-testid="stNumberInputContainer"],
+div[data-testid="stDateInput"] > div,
+div[data-testid="stTextInput"] > div,
+div[data-testid="stTextArea"] > div,
+div[data-testid="stSelectbox"] > div {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid transparent !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+    outline: none !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+/* 内层 input 也清掉边框 / 背景，避免二次描边 */
+div[data-baseweb="input"] input,
+div[data-baseweb="base-input"] input,
+div[data-baseweb="select"] input,
+div[data-baseweb="textarea"] textarea,
+div[data-testid="stNumberInputContainer"] input,
+div[data-testid="stDateInput"] input {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+    color: #E8EEF7 !important;
+}
+/* 悬停：极轻微提亮，不出现强边框 */
+div[data-baseweb="input"]:hover,
+div[data-baseweb="select"] > div:hover,
+div[data-baseweb="textarea"]:hover,
+div[data-testid="stNumberInputContainer"]:hover,
+div[data-testid="stDateInput"] > div:hover,
+div[data-testid="stTextInput"] > div:hover {
+    background: rgba(255, 255, 255, 0.075) !important;
+}
+/* 聚焦：只在这一刻出现柔和亮蓝边框 */
+div[data-baseweb="input"]:focus-within,
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="textarea"]:focus-within,
+div[data-baseweb="base-input"]:focus-within,
+div[data-testid="stNumberInputContainer"]:focus-within,
+div[data-testid="stNumberInputContainer"]:has(input:focus),
+div[data-testid="stDateInput"] > div:focus-within,
+div[data-testid="stTextInput"] > div:focus-within,
+div[data-testid="stTextArea"] > div:focus-within,
+div[data-testid="stSelectbox"] > div:focus-within {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border-color: rgba(59, 130, 246, 0.85) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18) !important;
+}
+/* 关闭 Streamlit / baseweb 默认的 focus 高亮条（常见的土黄/深色描边来源） */
+div[data-baseweb="input"] > div,
+div[data-baseweb="select"] > div > div,
+div[data-baseweb="textarea"] > div {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+input:focus, textarea:focus, select:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+/* 日期选择器弹层保持深色协调 */
+div[data-baseweb="calendar"], div[data-baseweb="calendar"] * {
+    border-color: rgba(148, 163, 184, 0.16) !important;
+}
+
+/* 侧边栏：与主区轻微色差 + 一条极弱右分割线 */
+section[data-testid="stSidebar"] {
+    background: #111C31 !important;
+    border-right: none !important;
+    box-shadow: 1px 0 0 rgba(148, 163, 184, 0.10) !important;
+    backdrop-filter: none !important;
+}
+
+/* ---------- 二、增强诱惑力：卡片与幽灵按钮 ---------- */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) {
+    background: #1E293B !important;
+    border: none !important;
+    border-radius: 12px !important;
+    padding: 20px 18px 16px 18px;
+    box-shadow: 0 4px 14px rgba(2, 6, 23, 0.35);
+    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1),
+                box-shadow 0.22s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title):hover {
+    transform: translateY(-5px);
+    box-shadow: 0 16px 36px rgba(2, 6, 23, 0.55),
+                0 0 0 1px rgba(59, 130, 246, 0.30);
+}
+.preset-icon {
+    font-size: 32px;
+    filter: none;
+}
+.preset-title {
+    font-size: 16.5px;
+    font-weight: 700;
+    color: #F3F7FC;
+    margin: 8px 0 4px 0;
+}
+/* 卡片内按钮：蓝色幽灵按钮（透明底 + 亮蓝边框与文字），悬停变亮 */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > button {
+    background: transparent !important;
+    border: 1px solid rgba(59, 130, 246, 0.75) !important;
+    border-radius: 8px !important;
+    color: #60A5FA !important;
+    font-weight: 600;
+    box-shadow: none !important;
+    transition: background 0.18s ease, color 0.18s ease,
+                border-color 0.18s ease, box-shadow 0.18s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > button:hover {
+    background: rgba(59, 130, 246, 0.16) !important;
+    border-color: #60A5FA !important;
+    color: #BFDBFE !important;
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.35) !important;
+    transform: none;
+}
+
+/* ---------- 四、引导下一步行动：CTA 固定侧栏底部 + 呼吸光晕 ---------- */
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    padding-bottom: 104px;
+}
+/* 侧栏里唯一的 primary 按钮就是「开始规划」 */
+section[data-testid="stSidebar"] .stButton:has(> button[kind="primary"]) {
+    position: sticky;
+    bottom: 10px;
+    z-index: 60;
+    margin-top: 12px;
+    padding: 8px 0 4px 0;
+    background: linear-gradient(180deg, rgba(17, 28, 49, 0) 0%, #111C31 42%);
+}
+section[data-testid="stSidebar"] .stButton > button[kind="primary"],
+.stButton > button[kind="primary"] {
+    background: linear-gradient(90deg, #3B82F6 0%, #6366F1 55%, #8B5CF6 100%) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    color: #FFFFFF !important;
+    font-size: 15.5px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    padding: 0.72rem 1rem;
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.50),
+                0 6px 18px rgba(59, 130, 246, 0.28);
+    animation: ctaBreath 2.8s ease-in-out infinite;
+}
+@keyframes ctaBreath {
+    0%, 100% { box-shadow: 0 0 13px rgba(59, 130, 246, 0.42), 0 6px 18px rgba(59, 130, 246, 0.24); }
+    50%      { box-shadow: 0 0 22px rgba(59, 130, 246, 0.68), 0 8px 24px rgba(99, 102, 241, 0.34); }
+}
+section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
+.stButton > button[kind="primary"]:hover {
+    animation: none;
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+    box-shadow: 0 0 26px rgba(59, 130, 246, 0.75),
+                0 10px 28px rgba(99, 102, 241, 0.42);
+}
+
 </style>
 """
 
