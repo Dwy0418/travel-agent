@@ -242,6 +242,8 @@ PRESETS: list[dict[str, Any]] = [
     {
         "key": "meizhou",
         "icon": "👴",
+        "tag": "🔥 爆款",
+        "img": "https://images.unsplash.com/photo-1543827184-15b360776d3e?q=80&w=800&auto=format&fit=crop",
         "title": "梅州客都悠闲 2 日游",
         "desc": "带老人慢节奏，围龙屋与客家博物馆",
         "payload": {
@@ -257,6 +259,8 @@ PRESETS: list[dict[str, Any]] = [
     {
         "key": "shanghai",
         "icon": "🏙️",
+        "tag": "🎨 室内避雨",
+        "img": "https://images.unsplash.com/photo-1554907984-15263bfd63bd?q=80&w=800&auto=format&fit=crop",
         "title": "上海室内看展打卡",
         "desc": "美术馆 + 展览，雨天也不怕",
         "payload": {
@@ -272,6 +276,8 @@ PRESETS: list[dict[str, Any]] = [
     {
         "key": "chuanxi",
         "icon": "🏔️",
+        "tag": "🏔️ 风光大片",
+        "img": "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?q=80&w=800&auto=format&fit=crop",
         "title": "川西自驾特种兵 3 日",
         "desc": "高原风光与观景点，密度拉满",
         "payload": {
@@ -1160,6 +1166,122 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
                 0 10px 28px rgba(99, 102, 241, 0.42);
 }
 
+
+/* ==========================================================================
+   V4 图文示例卡片（小红书/携程宣传图风格）
+   ========================================================================== */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) {
+    padding: 0 !important;
+    background: #0B1220 !important;
+    border: none !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.45);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) > div,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) [data-testid="stVerticalBlock"] {
+    gap: 0 !important;
+    padding: 0 !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover {
+    transform: translateY(-5px);
+    box-shadow: 0 22px 44px rgba(2, 6, 23, 0.68);
+}
+
+.pc-card {
+    position: relative;
+    height: 240px;
+    overflow: hidden;
+    border-radius: 16px 16px 0 0;
+    background: #1E293B;
+}
+.pc-img {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    transform: scale(1);
+    transition: transform 0.3s ease;
+}
+.pc-card:hover .pc-img,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover .pc-img {
+    transform: scale(1.05);
+}
+.pc-shade {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top,
+                rgba(0, 0, 0, 0.90) 0%,
+                rgba(0, 0, 0, 0.45) 38%,
+                rgba(0, 0, 0, 0.00) 72%);
+    pointer-events: none;
+}
+.pc-tag {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    padding: 4px 11px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.45;
+    color: #FFFFFF;
+    background: rgba(15, 23, 42, 0.60);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+.pc-body {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 12px;
+}
+.pc-title {
+    font-size: 17px;
+    font-weight: 800;
+    line-height: 1.35;
+    color: #FFFFFF;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.60);
+}
+.pc-desc {
+    margin-top: 5px;
+    font-size: 12.5px;
+    font-weight: 400;
+    line-height: 1.55;
+    color: #D3DCE8;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+/* 按钮与图片融合为一条底部操作栏 */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button[kind="secondary"] {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0.62rem 1rem;
+    background: #0B1220 !important;
+    border: none !important;
+    border-top: 1px solid rgba(148, 163, 184, 0.14) !important;
+    border-radius: 0 0 16px 16px !important;
+    color: #60A5FA !important;
+    font-size: 13.5px;
+    font-weight: 700;
+    box-shadow: none !important;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button:hover {
+    background: rgba(59, 130, 246, 0.18) !important;
+    color: #BFDBFE !important;
+    border-top-color: rgba(59, 130, 246, 0.40) !important;
+    transform: none;
+    box-shadow: none !important;
+}
 </style>
 """
 
@@ -1325,9 +1447,18 @@ def render_empty_state() -> None:
     for col, preset in zip(cols, PRESETS):
         with col:
             with card():
-                st.markdown(f"<div class='preset-icon'>{preset['icon']}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='preset-title'>{escape(preset['title'])}</div>", unsafe_allow_html=True)
-                st.caption(preset["desc"])
+                st.markdown(
+                    "<div class='pc-card'>"
+                    f"<div class='pc-img' style=\"background-image:url('{preset['img']}')\"></div>"
+                    "<div class='pc-shade'></div>"
+                    f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
+                    "<div class='pc-body'>"
+                    f"<div class='pc-title'>{escape(preset['title'])}</div>"
+                    f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
+                    "</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
                 if full_width_button("套用这个旅程", key=f"preset_{preset['key']}"):
                     st.session_state["_pending_preset"] = preset
                     st.rerun()
