@@ -1770,6 +1770,27 @@ div[data-testid="stElementContainer"]:has(.pc-face) {
     color: #D3DCE8;
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
 }
+/* 天数与价格：挑行程最关心的两个数，直接摆在标题下方 */
+.pc-meta {
+    margin-top: 7px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.5;
+    color: #AEC1DA;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.72);
+}
+.pc-price {
+    padding: 1px 7px;
+    font-size: 12.5px;
+    font-weight: 800;
+    color: #0B1220;
+    background: linear-gradient(96deg, #FCD34D, #F59E0B);
+    border-radius: 6px;
+    text-shadow: none;
+}
 .pc-hint {
     position: absolute;
     top: 12px;
@@ -1815,32 +1836,30 @@ div[data-testid="stElementContainer"]:has(.pc-face) + div [data-testid="stButton
     opacity: 0;
 }
 
-/* 底部操作条 */
+/* 底部操作条：主 CTA，必须一眼看出是可点的按钮 */
 div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child {
-    padding: 10px 14px 12px;
+    padding: 12px 14px 14px;
 }
 div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child
     [data-testid="stButton"] button {
     width: 100% !important;
     margin: 0 !important;
-    padding: 0.62rem 1rem !important;
-    font-size: 13.5px !important;
-    background: #0B1220 !important;
+    padding: 0.66rem 1rem !important;
+    font-size: 14px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.3px;
+    color: #FFFFFF !important;
+    background: linear-gradient(96deg, #3B82F6 0%, #6366F1 55%, #8B5CF6 100%) !important;
     border: none !important;
-    border-top: 1px solid rgba(148, 163, 184, 0.14) !important;
-    border-radius: 0 !important;
-    color: #60A5FA !important;
-    font-weight: 700;
-    box-shadow: none !important;
-    transition: background 0.2s ease, color 0.2s ease;
+    border-radius: 10px !important;
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.38) !important;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
 }
 div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElementContainer"]:last-child
     [data-testid="stButton"] button:hover {
-    background: rgba(59, 130, 246, 0.18) !important;
-    color: #BFDBFE !important;
-    border-top-color: rgba(59, 130, 246, 0.40) !important;
-    transform: none;
-    box-shadow: none !important;
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+    box-shadow: 0 10px 26px rgba(99, 102, 241, 0.52) !important;
 }
 
 /* ---------- 推荐区标题（随目的地联动的范围提示） ---------- */
@@ -1940,22 +1959,30 @@ section[data-testid="stSidebar"][data-collapsed="true"] [data-testid="stSidebarU
 }
 /* 收起后首屏整体上移：标题少留一段头顶空白（.hero 那条是 !important，这里也得跟上） */
 .stApp:has(section[data-testid="stSidebar"][data-collapsed="true"]) .hero {
-    padding-top: clamp(28px, 6vh, 56px) !important;
+    padding-top: clamp(4px, 1.2vh, 16px) !important;
 }
 
-/* 首屏自适应：标题跟着视口缩放，窄屏（或侧栏展开挤占宽度）时卡片自动减列 */
+/* 首屏自适应：标题压到一行小字，把首屏高度让给卡片 */
 .hero {
-    padding: clamp(34px, 7vh, 84px) 12px clamp(18px, 3vh, 34px) 12px !important;
+    padding: clamp(6px, 1.6vh, 20px) 12px clamp(6px, 1.2vh, 14px) 12px !important;
 }
 .hero-title {
-    font-size: clamp(28px, 3.4vw, 46px) !important;
+    font-size: clamp(22px, 2.3vw, 34px) !important;
 }
 .hero-sub {
-    font-size: clamp(12px, 1.05vw, 15px) !important;
-    max-width: min(92%, 720px) !important;
+    font-size: clamp(11.5px, 0.95vw, 13.5px) !important;
+    max-width: min(92%, 640px) !important;
+    margin-top: 6px !important;
+    line-height: 1.6 !important;
 }
 .rec-head {
     padding: 0 clamp(2px, 0.6vw, 10px);
+    margin-bottom: clamp(8px, 1.4vh, 14px) !important;
+}
+/* 只装 <style> 的 markdown 容器高度为 0，却照样占掉 16px 的 flex gap：
+   首屏顶部原本压着 3 份这种全局样式，白吃掉 48px。整颗摘掉，可见内容不受影响。 */
+div[data-testid="stElementContainer"]:has(> div[data-testid="stMarkdown"] div > style:only-child) {
+    display: none;
 }
 @media (max-width: 1280px) {
     div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"] {
@@ -2316,8 +2343,7 @@ def render_empty_state() -> None:
     st.markdown(
         "<div class='hero'>"
         "<div class='hero-title'>✈️ 旅游规划助手</div>"
-        "<div class='hero-sub'>我是您的贴心旅行管家，请告诉我您的需求，"
-        "或者直接选中意的行程一键套用，左侧条件我会同步填好。</div>"
+        "<div class='hero-sub'>用大白话说说你的出行计划，或挑一张卡片直接生成行程。</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2341,7 +2367,7 @@ def render_empty_state() -> None:
                     # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
                     if st.button("看详情", key=f"detail_{preset['key']}"):
                         show_detail(preset)
-                    if full_width_button("套用这个行程", key=f"preset_{preset['key']}"):
+                    if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
                         # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
                         st.session_state["_pending_preset"] = preset
                         st.session_state["_run_preset"] = True
@@ -2349,7 +2375,21 @@ def render_empty_state() -> None:
 
 
 def _card_face(preset: dict[str, Any], slot: int) -> str:
-    """卡片正面浮层：遮罩、标签、标题与「看详情」提示。点击交给底下的照片按钮。"""
+    """卡片正面浮层：遮罩、标签、标题、天数与价格。点击交给底下的照片按钮。"""
+    payload = preset.get("payload") or {}
+    days = int(payload.get("days") or 0)
+    people = int(payload.get("people") or 0)
+    budget = float(payload.get("budget") or 0)
+    bits: list[str] = []
+    if days:
+        bits.append(f"🗓 {days} 天 {max(days - 1, 0)} 晚")
+    if people:
+        bits.append(f"👥 {people} 人")
+    meta = " · ".join(bits)
+    if budget:
+        per = budget / people if people else budget
+        label = "人均" if people > 1 else "预算"
+        meta += f" · {label} <span class='pc-price'>¥{per:,.0f}</span>"
     return (
         f"<div class='pc-face pc-face-{slot}' style='animation-delay:{slot * 60}ms'>"
         "<div class='pc-shade'></div>"
@@ -2358,6 +2398,7 @@ def _card_face(preset: dict[str, Any], slot: int) -> str:
         "<div class='pc-body'>"
         f"<div class='pc-title'>{escape(preset['title'])}</div>"
         f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
+        f"<div class='pc-meta'>{meta}</div>"
         "</div>"
         "</div>"
     )
@@ -2702,9 +2743,9 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         "出行人数",
         min_value=1,
         max_value=999999,
-        step=1,
+        step=None,  # 不显示加减号：想填多少直接敲
         key=k("people"),
-        help="公司团建等大团体可直接填人数，上限 99 万",
+        help="点输入框直接键入数字；公司团建等大团体可填更大人数",
     )
 
     seed_state(k("budget"), base["budget"])
@@ -2712,9 +2753,9 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         "总预算（元）",
         min_value=200,
         max_value=9999999,
-        step=100,
+        step=None,  # 不显示加减号：三千块不必点三十下
         key=k("budget"),
-        help="人数较多的团体可以填更大的预算",
+        help="点输入框直接键入数字，例如 3000",
     )
 
     companions = _companion_picker(prefix, seed=list(base["companions"]))
