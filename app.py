@@ -293,6 +293,217 @@ PRESETS: list[dict[str, Any]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# 目的地级联推荐数据：全国池 / 省级 / 市级，全部由 CITY_CARDS 派生
+# ---------------------------------------------------------------------------
+U = "https://images.unsplash.com/photo-"
+Q = "?q=80&w=800&auto=format&fit=crop"
+IMG = {
+    'gz1': U + "1545893835-abaa50cbe628" + Q,
+    'gz2': U + "1508804185872-d7badad00f7d" + Q,
+    'gz3': U + "1528127269322-539801943592" + Q,
+    'mz1': U + "1543827184-15b360776d3e" + Q,
+    'mz2': U + "1517760444937-f6397edcbbcd" + Q,
+    'mz3': U + "1441974231531-c6227db76b6e" + Q,
+    'sz1': U + "1540959733332-eab4deabeeaf" + Q,
+    'sz2': U + "1503899036084-c55cdd92da26" + Q,
+    'sz3': U + "1499856871958-5b9627545d1a" + Q,
+    'cd1': U + "1552832230-c0197dd311b5" + Q,
+    'cd2': U + "1526481280693-3bfa7568e0f3" + Q,
+    'cd3': U + "1507525428034-b723cf961d3e" + Q,
+    'gzz1': U + "1464822759023-fed622ff2c3b" + Q,
+    'gzz2': U + "1506905925346-21bda4d32df4" + Q,
+    'gzz3': U + "1519681393784-d120267933ba" + Q,
+    'bj1': U + "1547981609-4b6bfe67ca0b" + Q,
+    'bj2': U + "1528164344705-47542687000d" + Q,
+    'bj3': U + "1469474968028-56623f02e42e" + Q,
+    'sh1': U + "1554907984-15263bfd63bd" + Q,
+    'sh2': U + "1533105079780-92b9be482077" + Q,
+    'sh3': U + "1476514525535-07fb3b4ae5f1" + Q,
+    'hz1': U + "1508804185872-d7badad00f7d" + Q,
+    'hz2': U + "1441974231531-c6227db76b6e" + Q,
+    'hz3': U + "1526481280693-3bfa7568e0f3" + Q,
+    'dl1': U + "1506905925346-21bda4d32df4" + Q,
+    'dl2': U + "1476514525535-07fb3b4ae5f1" + Q,
+    'dl3': U + "1519681393784-d120267933ba" + Q,
+    'xa1': U + "1547981609-4b6bfe67ca0b" + Q,
+    'xa2': U + "1528164344705-47542687000d" + Q,
+    'xa3': U + "1469474968028-56623f02e42e" + Q,
+    'xm1': U + "1507525428034-b723cf961d3e" + Q,
+    'xm2': U + "1499856871958-5b9627545d1a" + Q,
+    'xm3': U + "1540959733332-eab4deabeeaf" + Q,
+}
+
+# (tag, img, title, desc, days, people, budget, companions, preferences, request)
+RAW = {
+    "梅州市": [
+        ("🔥 爆款", 'mz1', "梅州客都悠闲 2 日游", "带老人慢节奏，围龙屋与客家博物馆", 2, 2, 3000,
+         ["带老人"], ["少走路/休闲游", "室内为主"], "想去有当地文化特色的地方，节奏轻松些"),
+        ("🍵 客家文化", 'mz2', "围龙屋 + 客家博物馆 2 日", "古建筑群与迁徙史，一圈看懂客家", 2, 2, 2600,
+         ["情侣/夫妻"], ["文化历史", "出片率高"], "重点看围龙屋和客家博物馆"),
+        ("🌿 茶田慢游", 'mz3', "雁南飞茶田康养 3 日", "茶山云雾、温泉，老人小孩都轻松", 3, 4, 4200,
+         ["亲子家庭"], ["少走路/休闲游", "户外自然"], "想去茶田和温泉，节奏慢一点"),
+    ],
+    "广州市": [
+        ("🥟 早茶必吃", 'gz1', "广州老城早茶 2 日", "陶陶居、上下九，一天五顿不重样", 2, 2, 2800,
+         ["朋友结伴"], ["美食为主"], "主要想喝早茶和吃地道小吃"),
+        ("🌉 珠江夜景", 'gz2', "广州塔 + 珠江夜游 2 日", "白天逛沙面，晚上看小蛮腰灯光", 2, 2, 3200,
+         ["情侣/夫妻"], ["出片率高", "夜景为主"], "想看广州塔和珠江夜景"),
+        ("👶 亲子长隆", 'gz3', "长隆亲子 3 日", "野生动物世界 + 欢乐世界，孩子玩到不肯走", 3, 3, 6000,
+         ["带小孩", "亲子家庭"], ["亲子友好", "室内为主"], "以长隆为主，孩子 6 岁"),
+    ],
+    "深圳市": [
+        ("🏙️ 都市海岸", 'sz1', "深圳湾 + 大梅沙 2 日", "骑行、看海、看对岸灯火", 2, 2, 3400,
+         ["情侣/夫妻"], ["出片率高", "户外自然"], "想看海和城市天际线"),
+        ("🎨 艺术街区", 'sz2', "华侨城创意园看展 2 日", "旧厂房改造的艺术区，遍地咖啡馆", 2, 2, 3000,
+         ["独自出行"], ["室内为主", "出片率高"], "想看展和逛独立书店"),
+        ("🚀 科技研学", 'sz3', "深圳科技亲子研学 2 日", "科技馆 + 人才公园，边玩边学", 2, 3, 3600,
+         ["带小孩"], ["亲子友好", "室内为主"], "希望有科技馆这类研学内容"),
+    ],
+    "成都市": [
+        ("🐼 熊猫 + 火锅", 'cd1', "成都熊猫基地 2 日", "早看熊猫下午喝茶，晚上火锅", 2, 2, 3000,
+         ["情侣/夫妻"], ["美食为主", "出片率高"], "一定要看熊猫，也想吃火锅"),
+        ("🏮 市井慢生活", 'cd2', "成都老城慢游 3 日", "宽窄巷子、人民公园、锦里", 3, 3, 4000,
+         ["带老人"], ["少走路/休闲游", "文化历史"], "节奏慢，多喝茶少赶路"),
+        ("🎋 都江堰青城山", 'cd3', "都江堰 + 青城山 2 日", "上午看水利工程，下午上山避暑", 2, 2, 2600,
+         ["朋友结伴"], ["户外自然", "文化历史"], "想看水利工程和爬山"),
+    ],
+    "甘孜州": [
+        ("🏔️ 风光大片", 'gzz1', "川西自驾特种兵 3 日", "高原风光与观景点，密度拉满", 3, 2, 8000,
+         ["朋友结伴"], ["出片率高", "户外自然", "特种兵拉练"], "以自驾为主，多安排高原风光与观景点"),
+        ("📷 摄影环线", 'gzz2', "新都桥摄影环线 4 日", "光影最好的川西，随手都是壁纸", 4, 2, 9000,
+         ["朋友结伴"], ["出片率高", "户外自然"], "以摄影为主，愿意早起守日出"),
+        ("⛰️ 高原轻徒步", 'gzz3', "稻城亚丁 4 日", "雪山、牛奶海，体力中等可完成", 4, 2, 8600,
+         ["朋友结伴"], ["户外自然", "特种兵拉练"], "想看雪山和海子，能走 3 小时"),
+    ],
+    "北京市": [
+        ("🏯 经典初访", 'bj1', "北京必打卡 3 日", "故宫、长城、颐和园一次走完", 3, 2, 5000,
+         ["情侣/夫妻"], ["文化历史", "出片率高"], "第一次来北京，想走经典路线"),
+        ("👴 老人友好", 'bj2', "北京慢游 4 日", "每天两景点，午后回酒店休息", 4, 3, 6500,
+         ["带老人"], ["少走路/休闲游", "文化历史"], "带爸妈来，别太累"),
+        ("🎨 展览与胡同", 'bj3', "北京看展 + 胡同 2 日", "798、国博，顺路逛南锣鼓巷", 2, 2, 3600,
+         ["独自出行"], ["室内为主", "出片率高"], "想看展，也想去胡同里走走"),
+        ("🍜 京味美食", 'bj1', "北京小吃深度 2 日", "豆汁、卤煮、烤鸭，两天吃个遍", 2, 2, 3200,
+         ["朋友结伴"], ["美食为主"], "以吃为主，想吃地道小吃"),
+        ("🎓 亲子研学", 'bj2', "北京亲子研学 3 日", "科技馆 + 天文馆 + 动物园", 3, 3, 5800,
+         ["带小孩", "亲子家庭"], ["亲子友好", "室内为主"], "孩子 8 岁，想安排研学类场馆"),
+        ("⛰️ 京郊徒步", 'bj3', "京郊长城徒步 2 日", "野长城 + 民宿，人少景好", 2, 2, 2800,
+         ["朋友结伴"], ["户外自然", "出片率高"], "想走人少的野长城"),
+    ],
+    "上海市": [
+        ("🎨 室内避雨", 'sh1', "上海室内看展打卡", "美术馆 + 展览，雨天也不怕", 2, 2, 4500,
+         ["情侣/夫妻"], ["室内为主", "出片率高"], "想看美术馆和展览，尽量少走路"),
+        ("🌃 外滩夜色", 'sh2', "外滩 + 陆家嘴 2 日", "白天武康路，晚上看外滩灯光", 2, 2, 4200,
+         ["情侣/夫妻"], ["出片率高", "夜景为主"], "想看外滩夜景"),
+        ("🍰 咖啡与弄堂", 'sh3', "上海咖啡漫步 2 日", "梧桐区小店、弄堂、老洋房", 2, 2, 3800,
+         ["独自出行"], ["美食为主", "出片率高"], "想喝咖啡、逛小店，节奏轻松"),
+        ("👶 亲子科技馆", 'sh1', "上海亲子 2 日", "科技馆 + 自然博物馆", 2, 3, 4600,
+         ["带小孩"], ["亲子友好", "室内为主"], "孩子 7 岁，想去科技馆"),
+        ("🎭 演出与夜游", 'sh2', "上海看剧 + 浦江夜游 2 日", "下午看剧，晚上坐船", 2, 2, 5200,
+         ["情侣/夫妻"], ["室内为主", "夜景为主"], "想看一场话剧，再坐船夜游"),
+        ("🥢 本帮菜小馆", 'sh3', "上海本帮菜 2 日", "老字号与本帮小馆，一天三顿", 2, 2, 3400,
+         ["朋友结伴"], ["美食为主"], "主要想吃本帮菜"),
+    ],
+    "杭州市": [
+        ("🌊 西湖经典", 'hz1', "杭州西湖 2 日", "断桥、苏堤、灵隐寺，一条不绕路", 2, 2, 3200,
+         ["情侣/夫妻"], ["出片率高", "文化历史"], "第一次来杭州，主要看西湖"),
+        ("🍃 龙井茶山", 'hz2', "杭州茶山慢游 2 日", "龙井村喝茶，九溪十八涧散步", 2, 2, 3000,
+         ["带老人"], ["少走路/休闲游", "户外自然"], "想喝茶、走平路，别爬山"),
+        ("🎋 西溪湿地", 'hz3', "西溪湿地 + 良渚 2 日", "摇橹船穿芦苇，下午看文明遗址", 2, 3, 3400,
+         ["亲子家庭"], ["户外自然", "亲子友好"], "想坐船，孩子会喜欢"),
+    ],
+    "大理市": [
+        ("🏞️ 环洱海", 'dl1', "大理环洱海 3 日", "包车环湖，一路都是取景点", 3, 2, 4200,
+         ["情侣/夫妻"], ["出片率高", "户外自然"], "想环洱海，节奏轻松"),
+        ("🏔️ 苍山徒步", 'dl2', "苍山 + 洱海 3 日", "上午上山，下午湖边发呆", 3, 2, 4600,
+         ["朋友结伴"], ["户外自然", "出片率高"], "想走苍山步道"),
+        ("☕ 古城慢生活", 'dl3', "大理古城躺平 4 日", "晒太阳、喝咖啡、逛市集", 4, 2, 5000,
+         ["独自出行"], ["少走路/休闲游", "美食为主"], "不想赶行程，就想待着"),
+    ],
+    "西安市": [
+        ("🏛️ 兵马俑必看", 'xa1', "西安经典 3 日", "兵马俑、城墙、回民街一次走完", 3, 2, 4000,
+         ["情侣/夫妻"], ["文化历史", "美食为主"], "第一次来西安，想看兵马俑"),
+        ("👴 慢游古都", 'xa2', "西安老人友好 3 日", "每天两景点，多坐少走", 3, 3, 4800,
+         ["带老人"], ["少走路/休闲游", "文化历史"], "带父母，别太累"),
+        ("🌙 大唐不夜城", 'xa3', "西安夜景 + 汉服 2 日", "大唐不夜城穿汉服，出片率高", 2, 2, 3000,
+         ["朋友结伴"], ["出片率高", "夜景为主"], "想拍汉服照片，看夜景"),
+    ],
+    "厦门市": [
+        ("🏝️ 鼓浪屿", 'xm1', "厦门鼓浪屿 3 日", "老别墅、海边、慢节奏", 3, 2, 3800,
+         ["情侣/夫妻"], ["出片率高", "少走路/休闲游"], "想去鼓浪屿，节奏慢一点"),
+        ("🏫 亲子研学", 'xm2', "厦门亲子海边 3 日", "沙滩 + 科技馆 + 环岛路", 3, 3, 4600,
+         ["带小孩", "亲子家庭"], ["亲子友好", "户外自然"], "孩子想去海边玩沙"),
+        ("🍜 闽南小吃", 'xm3', "厦门小吃深度 2 日", "沙茶面、土笋冻、八市扫街", 2, 2, 2600,
+         ["朋友结伴"], ["美食为主"], "以吃为主，想逛本地市场"),
+    ],
+}
+
+
+def _build_card(city, idx, row):
+    tag, img, title, desc, days, people, budget, companions, prefs, request = row
+    return {
+        "key": f"{city}-{idx}",
+        "tag": tag,
+        "img": IMG[img],
+        "title": title,
+        "desc": desc,
+        "payload": {
+            "city": city,
+            "days": days,
+            "people": people,
+            "budget": budget,
+            "companions": companions,
+            "preferences": prefs,
+            "request": request,
+        },
+    }
+
+
+CITY_CARDS = {
+    city: [_build_card(city, i, row) for i, row in enumerate(rows, start=1)]
+    for city, rows in RAW.items()
+}
+
+# 全国推荐池的优先级：按运营热度排序，避免直接依赖字典顺序
+CITY_PRIORITY = [
+    "北京市", "上海市", "广州市", "成都市", "杭州市", "深圳市",
+    "西安市", "厦门市", "大理市", "梅州市", "甘孜州",
+]
+
+# 「不限」占位项：让用户只看省级 / 全国推荐，而不用被迫选具体城市。
+# 值为空串提交给 Agent 前会被拦截（Agent 要求城市必填）。
+UNLIMITED_PROVINCE = "🗺️ 不限省份（看全国推荐）"
+UNLIMITED_CITY = "🏙️ 不限城市（看本省推荐）"
+
+
+def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
+    """按当前目的地级联挑推荐：市级 > 省级 > 全国，最多 limit 张。
+
+    返回 (卡片列表, 推荐范围说明)。只读 session_state，不写状态，
+    因此可以安全地在控件渲染之后调用。
+    """
+    country = st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"])
+    province = str(st.session_state.get("f_province", "") or "")
+    city = str(st.session_state.get("f_city", "") or "")
+
+    if city and city != UNLIMITED_CITY and city in CITY_CARDS:
+        return CITY_CARDS[city][:limit], f"{city} · 为你精选"
+
+    if province and province != UNLIMITED_PROVINCE:
+        picked: list[dict[str, Any]] = []
+        for one in DESTINATION_TREE.get(country, {}).get(province, []):
+            picked.extend(CITY_CARDS.get(one, []))
+        if picked:
+            return picked[:limit], f"{province} · 热门行程"
+
+    pool: list[dict[str, Any]] = []
+    for one in CITY_PRIORITY:
+        pool.extend(CITY_CARDS.get(one, []))
+    return pool[:limit], "全国热门推荐"
+
+
+
+
 
 # ---------------------------------------------------------------------------
 # 全局 CSS（任务 5）：深灰蓝底 + 毛玻璃 + 渐变按钮 + 时间轴
@@ -1282,6 +1493,35 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
     transform: none;
     box-shadow: none !important;
 }
+
+/* ---------- 推荐区标题（随目的地联动的范围提示） ---------- */
+.rec-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 4px 2px 14px 2px;
+}
+.rec-scope {
+    font-size: 15px;
+    font-weight: 800;
+    color: #E2E9F5;
+    letter-spacing: 0.4px;
+}
+.rec-scope::before {
+    content: "";
+    display: inline-block;
+    width: 3px;
+    height: 14px;
+    margin-right: 8px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, #3B82F6, #8B5CF6);
+    vertical-align: -1px;
+}
+.rec-tip {
+    font-size: 12px;
+    color: #7C8CA3;
+}
 </style>
 """
 
@@ -1434,34 +1674,45 @@ def apply_pending_preset() -> None:
 
 
 def render_empty_state() -> None:
-    """首屏视觉中心：Agent 身份 + 3 张示例卡片（取代全局大标题）。"""
+    """首屏视觉中心：Agent 身份 + 随目的地联动的图文推荐卡片。"""
+    cards, scope = pick_recommendations(6)
+
     st.markdown(
         "<div class='hero'>"
         "<div class='hero-title'>✈️ 旅游规划助手</div>"
         "<div class='hero-sub'>我是您的贴心旅行管家，请告诉我您的需求，"
-        "或者直接选择下方的一个示例开启旅程吧！</div>"
+        "或者直接选中意的行程一键套用，左侧条件我会同步填好。</div>"
         "</div>",
         unsafe_allow_html=True,
     )
-    cols = st.columns(3, gap="medium")
-    for col, preset in zip(cols, PRESETS):
-        with col:
-            with card():
-                st.markdown(
-                    "<div class='pc-card'>"
-                    f"<div class='pc-img' style=\"background-image:url('{preset['img']}')\"></div>"
-                    "<div class='pc-shade'></div>"
-                    f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
-                    "<div class='pc-body'>"
-                    f"<div class='pc-title'>{escape(preset['title'])}</div>"
-                    f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
-                    "</div>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                if full_width_button("套用这个旅程", key=f"preset_{preset['key']}"):
-                    st.session_state["_pending_preset"] = preset
-                    st.rerun()
+    st.markdown(
+        f"<div class='rec-head'><span class='rec-scope'>{escape(scope)}</span>"
+        "<span class='rec-tip'>点开卡片下方按钮即可套用</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    for row in (cards[0:3], cards[3:6]):
+        if not row:
+            continue
+        cols = st.columns(3, gap="medium")
+        for col, preset in zip(cols, row):
+            with col:
+                with card():
+                    st.markdown(
+                        "<div class='pc-card'>"
+                        f"<div class='pc-img' style=\"background-image:url('{preset['img']}')\"></div>"
+                        "<div class='pc-shade'></div>"
+                        f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
+                        "<div class='pc-body'>"
+                        f"<div class='pc-title'>{escape(preset['title'])}</div>"
+                        f"<div class='pc-desc'>{escape(preset['desc'])}</div>"
+                        "</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if full_width_button("套用这个旅程", key=f"preset_{preset['key']}"):
+                        st.session_state["_pending_preset"] = preset
+                        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1565,8 +1816,9 @@ def plain_companions(values: list[str]) -> list[str]:
 
 CONSTRAINT_DEFAULTS: dict[str, Any] = {
     "country": "🇨🇳 中国",
-    "province": "广东省",
-    "city": "梅州市",
+    # 初始不预设省市：首屏展示全国热门推荐，用户选到哪一层就联动到哪一层
+    "province": UNLIMITED_PROVINCE,
+    "city": UNLIMITED_CITY,
     "days": 2,
     "people": 2,
     "budget": 3000,
@@ -1620,11 +1872,16 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
     _sync_select(k("country"), country_options, base.get("country"))
     country = st.selectbox("目的地（国家 / 地区）", country_options, key=k("country"))
 
-    province_options = list(DESTINATION_TREE.get(country, {}))
+    province_options = [UNLIMITED_PROVINCE] + list(DESTINATION_TREE.get(country, {}))
     _sync_select(k("province"), province_options, base.get("province"))
     province = st.selectbox("省份 / 直辖市", province_options, key=k("province"))
 
-    city_options = list(DESTINATION_TREE.get(country, {}).get(province, []))
+    if province == UNLIMITED_PROVINCE:
+        city_options = [UNLIMITED_CITY]
+    else:
+        city_options = [UNLIMITED_CITY] + list(
+            DESTINATION_TREE.get(country, {}).get(province, [])
+        )
     _sync_select(k("city"), city_options, base.get("city"))
     city = st.selectbox("城市", city_options, key=k("city"))
 
@@ -1730,8 +1987,8 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
 
     return {
         "country": country,
-        "province": province,
-        "city": city,
+        "province": "" if province == UNLIMITED_PROVINCE else province,
+        "city": "" if city == UNLIMITED_CITY else city,
         "days": int(days),
         "people": int(people),
         "budget": float(budget),
@@ -2389,6 +2646,10 @@ def main() -> None:
     if rerun_request is not None:
         run_clicked = True
         request = str(rerun_request)
+
+    if run_clicked and not str(payload.get("city") or "").strip():
+        st.warning("请先在左侧把「城市」选成具体城市，再开始规划。")
+        run_clicked = False
 
     if run_clicked:
         st.session_state.pop("result", None)
