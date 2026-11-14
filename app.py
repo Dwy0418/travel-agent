@@ -459,6 +459,22 @@ def _build_card(city, idx, row):
     }
 
 
+
+# ---------------------------------------------------------------------------
+# 补齐数据：每个城市凑满 6 条，保证市级联动正好 6 张卡片
+# ---------------------------------------------------------------------------
+EXTRA_IMAGES = {'mz4': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'mz5': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'mz6': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'gz4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'gz5': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'gz6': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'sz4': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop', 'sz5': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'sz6': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'cd4': 'https://images.unsplash.com/photo-1518186285589-2f7649de83e0?q=80&w=800&auto=format&fit=crop', 'cd5': 'https://images.unsplash.com/photo-1547981609-4b6bfe67ca0b?q=80&w=800&auto=format&fit=crop', 'cd6': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'gzz4': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'gzz5': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'gzz6': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'bj4': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'bj5': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'bj6': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'sh4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'sh5': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'sh6': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop', 'hz4': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'hz5': 'https://images.unsplash.com/photo-1547981609-4b6bfe67ca0b?q=80&w=800&auto=format&fit=crop', 'hz6': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'dl4': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'dl5': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'dl6': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'xa4': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'xa5': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'xa6': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'xm4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'xm5': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'xm6': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop'}
+
+EXTRA_RAW: dict[str, list[tuple]] = {'梅州市': [('🏛️ 古村探访', 'mz4', '梅州古村落 2 日', '桥溪古村 + 松口古镇，慢走细看', 2, 2, 2400, ['带老人'], ['少走路/休闲游', '文化历史'], '想看老屋和古村，路别太陡'), ('🍚 客家美食', 'mz5', '梅州客家菜 2 日', '盐焗鸡、酿豆腐、腌面一天吃遍', 2, 2, 2200, ['朋友结伴'], ['美食为主'], '以吃为主，想吃地道客家菜'), ('♨️ 温泉康养', 'mz6', '梅州温泉康养 3 日', '泡汤 + 山间散步，节奏最松', 3, 2, 3600, ['带老人', '情侣/夫妻'], ['少走路/休闲游'], '主要想泡温泉休息')], '广州市': [('🏛️ 沙面建筑', 'gz4', '广州沙面 + 永庆坊 2 日', '老洋房与骑楼，拍照不重样', 2, 2, 2900, ['情侣/夫妻'], ['出片率高', '文化历史'], '想拍老建筑'), ('🚢 珠江夜游', 'gz5', '广州夜游 + 北京路 2 日', '白天逛博物馆，晚上坐船', 2, 2, 3000, ['朋友结伴'], ['夜景为主', '美食为主'], '想看夜景，顺便吃小吃'), ('🌳 白云山轻徒步', 'gz6', '广州白云山 + 越秀 2 日', '半天上山，半天老城', 2, 3, 2600, ['亲子家庭'], ['户外自然', '亲子友好'], '想爬不难的山，孩子也能走')], '深圳市': [('🐬 亲子海洋', 'sz4', '深圳海洋亲子 2 日', '海洋馆 + 红树林，孩子放电', 2, 3, 3800, ['带小孩', '亲子家庭'], ['亲子友好', '室内为主'], '孩子想看海洋动物'), ('🏖️ 大鹏半岛', 'sz5', '深圳大鹏海边 2 日', '较场尾住一晚，早起看日出', 2, 2, 3600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想住海边看日出'), ('🍜 城中美食', 'sz6', '深圳美食扫街 2 日', '从东门到蛇口，一路吃过去', 2, 2, 3000, ['朋友结伴'], ['美食为主'], '主要想吃，越本地越好')], '成都市': [('🎋 熊猫义工', 'cd4', '成都熊猫义工 2 日', '近距离喂食，孩子最爱的项目', 2, 3, 4200, ['带小孩', '亲子家庭'], ['亲子友好', '室内为主'], '孩子想看熊猫，最好能近距离'), ('🍲 川菜寻味', 'cd5', '成都川菜寻味 3 日', '苍蝇馆子到私房菜，一日三餐', 3, 2, 3400, ['朋友结伴'], ['美食为主'], '以吃为主，能吃辣'), ('🏞️ 青城后山', 'cd6', '成都青城后山 2 日', '避暑、走溪谷、住山间民宿', 2, 2, 2800, ['情侣/夫妻'], ['户外自然', '少走路/休闲游'], '想避暑，走点平缓山路')], '甘孜州': [('🌄 日出观景', 'gzz4', '川西日出观景 3 日', '子梅垭口守日出，值回票价', 3, 2, 7800, ['朋友结伴'], ['出片率高', '户外自然', '特种兵拉练'], '愿意凌晨起床看日出'), ('🏕️ 高原露营', 'gzz5', '川西高原露营 3 日', '湖边扎营，夜里看星空', 3, 2, 8200, ['朋友结伴'], ['户外自然', '特种兵拉练'], '想露营看星空'), ('🐎 草原牧歌', 'gzz6', '川西草原环线 3 日', '塔公草原骑马，慢慢晃', 3, 2, 7600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想在草原上待着，不想赶')], '北京市': [('🎭 京味曲艺', 'bj4', '北京相声 + 老舍茶馆 2 日', '下午听相声，晚上喝盖碗茶', 2, 2, 3200, ['带老人'], ['文化历史', '室内为主'], '想看传统曲艺'), ('🏛️ 国博深度', 'bj5', '北京博物馆深度 3 日', '国博、首博、大运河馆', 3, 2, 4000, ['独自出行'], ['室内为主', '文化历史'], '想看博物馆，一天一个'), ('🍂 香山秋色', 'bj6', '北京香山 + 植物园 2 日', '秋天看红叶，缆车上山', 2, 2, 2600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想爬山看红叶，能坐缆车')], '上海市': [('🏛️ 外滩建筑', 'sh4', '上海外滩建筑漫步 2 日', '万国建筑群 + 邬达克作品', 2, 2, 4200, ['独自出行'], ['文化历史', '出片率高'], '想认真看老建筑'), ('🛍️ 梧桐逛街', 'sh5', '上海梧桐区逛街 2 日', '安福路、武康路、愚园路', 2, 2, 4000, ['情侣/夫妻'], ['美食为主', '出片率高'], '想逛街拍照，节奏轻松'), ('🎠 亲子迪士尼', 'sh6', '上海迪士尼 2 日', '两天一园，孩子玩到闭园', 2, 3, 6800, ['带小孩', '亲子家庭'], ['亲子友好', '出片率高'], '以迪士尼为主，孩子 6 岁')], '杭州市': [('🏯 灵隐古刹', 'hz4', '杭州灵隐 + 法喜寺 2 日', '古刹与茶园，安静的一条线', 2, 2, 3000, ['带老人'], ['文化历史', '少走路/休闲游'], '想逛寺庙，路平一点'), ('🚴 环湖骑行', 'hz5', '杭州环西湖骑行 2 日', '早起绕湖一圈，中午喝茶', 2, 2, 2800, ['朋友结伴'], ['户外自然', '出片率高'], '想骑车绕西湖'), ('🎨 运河街区', 'hz6', '杭州运河 + 小河直街 2 日', '老厂房改的街区，咖啡馆多', 2, 2, 3200, ['情侣/夫妻'], ['室内为主', '出片率高'], '想逛文创街区')], '大理市': [('🏘️ 喜洲古镇', 'dl4', '大理喜洲 + 海舌 2 日', '白族民居与稻田，出片稳', 3, 2, 4000, ['情侣/夫妻'], ['出片率高', '文化历史'], '想拍白族建筑'), ('🌅 双廊日出', 'dl5', '大理双廊住两晚 3 日', '推窗就是洱海，什么都不做', 3, 2, 4800, ['情侣/夫妻'], ['少走路/休闲游', '出片率高'], '想住海景房，躺着看日出'), ('🐎 苍山茶马古道', 'dl6', '大理茶马古道 3 日', '骑马走古道，下午回古城', 3, 2, 4400, ['朋友结伴'], ['户外自然', '文化历史'], '想走茶马古道')], '西安市': [('🍜 回民街小吃', 'xa4', '西安小吃深度 2 日', '泡馍、肉夹馍、甑糕一天六顿', 2, 2, 2800, ['朋友结伴'], ['美食为主'], '以吃为主，想扫街'), ('🏛️ 陕西历史', 'xa5', '西安博物馆 2 日', '陕历博 + 碑林，一天看不完', 2, 2, 3000, ['独自出行'], ['室内为主', '文化历史'], '想看文物和碑刻'), ('🏔️ 华山论剑', 'xa6', '西安 + 华山 3 日', '一天西安，一天华山上下', 3, 2, 4200, ['朋友结伴'], ['户外自然', '特种兵拉练'], '想爬华山，体力还行')], '厦门市': [('🌊 环岛路骑行', 'xm4', '厦门环岛路 2 日', '海边骑车，傍晚看日落', 2, 2, 3200, ['情侣/夫妻'], ['户外自然', '出片率高'], '想骑车看海'), ('🏛️ 集美学村', 'xm5', '厦门集美 + 曾厝垵 2 日', '嘉庚建筑与文艺小店', 2, 2, 3000, ['独自出行'], ['文化历史', '出片率高'], '想看老建筑和逛小店'), ('🐚 亲子沙坡尾', 'xm6', '厦门亲子海边 3 日', '沙滩、科技馆、海鲜市场', 3, 3, 4400, ['带小孩', '亲子家庭'], ['亲子友好', '美食为主'], '孩子想玩沙吃海鲜')]}
+
+for _city, _rows in EXTRA_RAW.items():
+    # 只在不足 6 条时补齐，避免本来够数的城市被堆到 9 条
+    _have = len(RAW.setdefault(_city, []))
+    if _have < 6:
+        RAW[_city].extend(_rows[: 6 - _have])
+IMG.update(EXTRA_IMAGES)
+
+
 CITY_CARDS = {
     city: [_build_card(city, i, row) for i, row in enumerate(rows, start=1)]
     for city, rows in RAW.items()
@@ -476,11 +492,28 @@ UNLIMITED_PROVINCE = "🗺️ 不限省份（看全国推荐）"
 UNLIMITED_CITY = "🏙️ 不限城市（看本省推荐）"
 
 
+def _interleave(groups: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """跨城市轮流取卡：先各城第 1 张，再各城第 2 张……避免整屏同一个城市。"""
+    picked: list[dict[str, Any]] = []
+    depth = 0
+    while len(picked) < limit:
+        added = False
+        for group in groups:
+            if depth < len(group):
+                picked.append(group[depth])
+                added = True
+                if len(picked) >= limit:
+                    return picked
+        if not added:
+            break
+        depth += 1
+    return picked
+
+
 def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
     """按当前目的地级联挑推荐：市级 > 省级 > 全国，最多 limit 张。
 
-    返回 (卡片列表, 推荐范围说明)。只读 session_state，不写状态，
-    因此可以安全地在控件渲染之后调用。
+    只读 session_state，不写状态，可以安全地在控件渲染之后调用。
     """
     country = st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"])
     province = str(st.session_state.get("f_province", "") or "")
@@ -490,16 +523,16 @@ def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
         return CITY_CARDS[city][:limit], f"{city} · 为你精选"
 
     if province and province != UNLIMITED_PROVINCE:
-        picked: list[dict[str, Any]] = []
-        for one in DESTINATION_TREE.get(country, {}).get(province, []):
-            picked.extend(CITY_CARDS.get(one, []))
-        if picked:
-            return picked[:limit], f"{province} · 热门行程"
+        groups = [
+            CITY_CARDS[one]
+            for one in DESTINATION_TREE.get(country, {}).get(province, [])
+            if one in CITY_CARDS
+        ]
+        if groups:
+            return _interleave(groups, limit), f"{province} · 热门行程"
 
-    pool: list[dict[str, Any]] = []
-    for one in CITY_PRIORITY:
-        pool.extend(CITY_CARDS.get(one, []))
-    return pool[:limit], "全国热门推荐"
+    groups = [CITY_CARDS[one] for one in CITY_PRIORITY if one in CITY_CARDS]
+    return _interleave(groups, limit), "全国热门推荐"
 
 
 
