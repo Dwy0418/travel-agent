@@ -540,9 +540,9 @@ UNLIMITED_PROVINCE = "🗺️ 不限省份（看全国推荐）"
 UNLIMITED_CITY = "🏙️ 不限城市（看本省推荐）"
 
 
-def _interleave(groups: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
-    """跨城市轮流取卡：先各城第 1 张，再各城第 2 张……避免整屏同一个城市。"""
-    picked: list[dict[str, Any]] = []
+def _interleave(groups: list[list[Any]], limit: int) -> list[Any]:
+    """跨城市轮流取：先各城第 1 个，再各城第 2 个……避免整屏同一个城市。"""
+    picked: list[Any] = []
     depth = 0
     while len(picked) < limit:
         added = False
@@ -581,6 +581,151 @@ def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
 
     groups = [CITY_CARDS[one] for one in CITY_PRIORITY if one in CITY_CARDS]
     return _interleave(groups, limit), "全国热门推荐"
+
+
+# ---------------------------------------------------------------------------
+# 全屏动态背景：多张高清图交叉淡入淡出，随目的地三级联动换图组
+# ---------------------------------------------------------------------------
+# 图源全部复用 IMG 里已按行程文案校对过的 Unsplash 直链，只从中挑「适合铺满整屏」
+# 的外景（地标 / 山水 / 海岸），不新增未校对的 photo id，避免出现「选成都、放罗马」
+# 这类错配，也不会因为图链失效而露出底色。
+BG_SLIDES = 4                  # 每组背景轮播几张
+BG_HOLD = 9.0                  # 单张占位秒数（含淡入淡出），4 张约 36 秒一轮
+BG_FADE = 3.0                  # 相邻两张交叉淡化的秒数
+BG_ZOOM = (1.03, 1.09)         # 每张在本窗口内的轻微推近，模拟镜头流动感
+
+# 城市 -> 背景用图（IMG 的 key），顺序即轮播顺序。
+# 逐张核对过实际画面：只留外景 / 地标，室内展陈与美食特写不进背景组，
+# 文案与画面对不上的（mz2 湖心亭、gz6 草原、xa2 海滨天际线等）也一并剔除。
+BG_CITY_KEYS: dict[str, list[str]] = {
+    "梅州市": ["mz1", "mz3", "mz4"],              # 老墙 / 茶田 / 灯笼古街
+    "广州市": ["gz2", "gz5", "gz4"],              # 广州塔 / 珠江夜景 / 沙面洋房
+    "深圳市": ["sz1", "sz5", "sz2"],              # 深圳湾 / 大鹏海岸 / 创意园
+    "成都市": ["cd1", "cd3", "cd2", "cd6"],        # 熊猫 / 都江堰 / 锦里 / 青城后山
+    "甘孜州": ["gzz1", "gzz3", "gzz4", "gzz6"],    # 川西公路 / 雪山 / 日出 / 草原
+    "北京市": ["bj2", "bj1", "bj6", "bj3"],        # 长城 / 故宫 / 京郊野长城 / 胡同
+    "上海市": ["sh2", "sh4", "sh1", "sh5"],        # 外滩夜景 / 装置 / 美术馆 / 剧场
+    "杭州市": ["hz1", "hz2", "hz3", "hz4"],        # 西湖 / 龙井 / 西溪 / 灵隐
+    "大理市": ["dl1", "dl3", "dl2", "dl5"],        # 洱海 / 古城街市 / 苍山 / 双廊
+    "西安市": ["xa1", "xa3", "xa6"],               # 兵马俑 / 古都石狮 / 华山
+    "厦门市": ["xm1", "xm4", "xm2", "xm5"],        # 厦门湾 / 环岛路 / 学村 / 骑楼
+}
+
+# 全国池：不按城市顺序轮播，直接挑四张最有「大好河山」辨识度的外景打底
+BG_NATIONAL_KEYS = ["bj2", "hz1", "dl1", "gzz1"]  # 长城 / 西湖 / 洱海 / 川西
+
+
+def _bg_url(key: str) -> str:
+    """卡片图是 900 宽，背景要铺满整屏，同一张图升到 1920 宽。"""
+    return IMG[key].replace("w=900", "w=1920")
+
+
+def _city_bg_keys(city: str) -> list[str]:
+    """该城的背景候选：优先用校对过的外景表，没收录就退回卡片图顺序。"""
+    if city in BG_CITY_KEYS:
+        return BG_CITY_KEYS[city]
+    return [row[1] for row in RAW.get(city, [])]
+
+
+def _bg_group() -> tuple[list[str], str]:
+    """按 城市 -> 省份 -> 全国 逐级挑背景，返回 (IMG key 列表, 范围名)。
+
+    「其他国家 / 地区」还没有校对过的图源，暂时落到全国池；补上 IMG 后自动生效。
+    """
+    country = st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"])
+    province = str(st.session_state.get("f_province", "") or "")
+    city = str(st.session_state.get("f_city", "") or "")
+
+    if city and city != UNLIMITED_CITY:
+        keys = _city_bg_keys(city)
+        if keys:
+            return keys[:BG_SLIDES], city
+
+    if province and province != UNLIMITED_PROVINCE:
+        groups = [
+            g
+            for g in (
+                _city_bg_keys(one)
+                for one in DESTINATION_TREE.get(country, {}).get(province, [])
+            )
+            if g
+        ]
+        if groups:
+            return _interleave(groups, BG_SLIDES), province
+
+    # 全国：直接用策划好的地标池，首屏就是「大好河山」，而不是某个城市的室内展
+    return BG_NATIONAL_KEYS, "全国"
+
+
+def _bg_alpha(t: float, center: float, cycle: float) -> float:
+    """第 t 秒这张图的可见度：窗口内保持 1，两端各用半个 BG_FADE 与邻居交叉淡化。"""
+    dist = abs((t - center + cycle / 2.0) % cycle - cycle / 2.0)
+    knee, edge = (BG_HOLD - BG_FADE) / 2.0, (BG_HOLD + BG_FADE) / 2.0
+    if dist <= knee:
+        return 1.0
+    if dist >= edge:
+        return 0.0
+    return (edge - dist) / BG_FADE
+
+
+def _bg_scale(t: float, center: float, cycle: float) -> float:
+    """可见窗口内从 BG_ZOOM[0] 匀速推到 [1]；回跳只发生在完全透明的那段。"""
+    span = BG_HOLD + BG_FADE
+    ratio = ((t - center + span / 2.0) % cycle) / span
+    lo, hi = BG_ZOOM
+    return lo + (hi - lo) * min(ratio, 1.0)
+
+
+def _bg_keyframes(idx: int, total: int) -> str:
+    """生成 tvbgN 关键帧。
+
+    断点只取折线的拐点，浏览器线性插值即可还原整条曲线；时间按周期取模，
+    首尾两张的淡化窗口跨 0 秒边界时会自动回绕，循环处不会出现黑帧或跳切。
+    """
+    cycle = BG_HOLD * total
+    # 窗口中心落在 idx * BG_HOLD：首屏第 0 张正好处于全显平台期，不会以半透明开场
+    center = idx * BG_HOLD
+    edge, knee = (BG_HOLD + BG_FADE) / 2.0, (BG_HOLD - BG_FADE) / 2.0
+    times = {0.0, cycle}
+    for delta in (-edge, -knee, knee, edge):
+        times.add((center + delta) % cycle)
+    stops = []
+    for t in sorted(times):
+        stops.append(
+            f"{t / cycle * 100:.2f}%{{opacity:{_bg_alpha(t, center, cycle):.3f};"
+            f"transform:scale({_bg_scale(t, center, cycle):.4f})}}"
+        )
+    body = " ".join(stops)
+    return f"@keyframes tvbg{idx}{{{body}}}"
+
+
+def background_html() -> str:
+    """背景层 HTML。
+
+    内容只随目的地级联变化：同一次选择下重复 rerun，这段字符串逐字节相同，
+    Streamlit 不会重发该元素，动画因此不会被重置回第一张。
+    """
+    keys, scope = _bg_group()
+    total = len(keys)
+    cycle = BG_HOLD * total
+    frames, layers = [], []
+    for i, key in enumerate(keys):
+        anim = f"tvbg{i} {cycle:.1f}s ease-in-out infinite" if total > 1 else "none"
+        url = escape(_bg_url(key), quote=True)
+        layers.append(
+            f'<div class="tv-bg-img" style="background-image:url(&#x27;{url}&#x27;);'
+            f'animation:{anim};"></div>'
+        )
+        if total > 1:
+            frames.append(_bg_keyframes(i, total))
+    # 结果页要长时间读表格文字，背景再压一档；空状态页保持原亮度展示风光
+    mode = "result" if st.session_state.get("result") else "form"
+    return (
+        f'<div class="tv-bg" aria-hidden="true" data-mode="{mode}" '
+        f'data-scope="{escape(scope, quote=True)}">'
+        f'{"".join(layers)}<div class="tv-bg-mask"></div></div>'
+        f'<style>{"".join(frames)}</style>'
+    )
 
 
 
@@ -1085,21 +1230,15 @@ section[data-testid="stSidebar"] [data-testid="stCheckbox"] p {
    ========================================================================== */
 
 /* ---------- 维度一：背景与层次 ---------- */
-/* 主题背景：极暗「航线图」矢量纹理 + 噪点 + 深蓝→深紫径向光晕。
-   所有肌理都压在 5%~10% 可见度，只负责氛围，不抢文字与卡片。 */
-.stApp {
-    background-color: #070B14 !important;
-    background-image:
-        url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIj48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44NSIgbnVtT2N0YXZlcz0iMyIgc3RpdGNoVGlsZXM9InN0aXRjaCIvPjxmZUNvbG9yTWF0cml4IHR5cGU9InNhdHVyYXRlIiB2YWx1ZXM9IjAiLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsdGVyPSJ1cmwoI24pIiBvcGFjaXR5PSIwLjA1NSIvPjwvc3ZnPg=="),
-        url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNDQwIiBoZWlnaHQ9IjkwMCIgdmlld0JveD0iMCAwIDE0NDAgOTAwIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiM3REQzRkMiIHN0cm9rZS1vcGFjaXR5PSIwLjEwIiBzdHJva2Utd2lkdGg9IjEuMSI+PHBhdGggZD0iTS00MCAzMDAgUSAyNDAgMTUwIDUyMCAyNjAgVCAxMDAwIDIwMCBUIDE0ODAgMzIwIi8+PHBhdGggZD0iTS00MCA2MjAgUSAyNjAgNDYwIDU2MCA1NDAgVCAxMDQwIDQ3MCBUIDE0ODAgNjAwIi8+PHBhdGggZD0iTTEyMCA5NDAgUSAzODAgNzAwIDcwMCA3NjAgVCAxMTgwIDY5MCBUIDE0ODAgODAwIi8+PC9nPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0E3OEJGQSIgc3Ryb2tlLW9wYWNpdHk9IjAuMDkiIHN0cm9rZS13aWR0aD0iMSIgc3Ryb2tlLWRhc2hhcnJheT0iMiA4Ij48cGF0aCBkPSJNLTQwIDQ1MCBRIDMwMCAzODAgNjQwIDQyMCBUIDE0ODAgNDAwIi8+PHBhdGggZD0iTTIwMCAtNDAgUSAzNjAgMzAwIDcwMCAzODAgVCAxMjAwIDQyMCBUIDE0ODAgMzgwIi8+PC9nPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzM4QkRGOCIgc3Ryb2tlLW9wYWNpdHk9IjAuMDciIHN0cm9rZS13aWR0aD0iMC45IiBzdHJva2UtZGFzaGFycmF5PSIxIDExIj48cGF0aCBkPSJNLTIwIDEyMCBRIDQyMCA2MCA5MDAgMTMwIFQgMTQ4MCA5MCIvPjxwYXRoIGQ9Ik0tMjAgNzYwIFEgNDYwIDgyMCA5ODAgNzQwIFQgMTQ4MCA3ODAiLz48L2c+PGcgZmlsbD0iIzdERDNGQyIgZmlsbC1vcGFjaXR5PSIwLjE2Ij48Y2lyY2xlIGN4PSI1MjAiIGN5PSIyNjAiIHI9IjIuNiIvPjxjaXJjbGUgY3g9IjEwMDAiIGN5PSIyMDAiIHI9IjIuNiIvPjxjaXJjbGUgY3g9IjU2MCIgY3k9IjU0MCIgcj0iMi40Ii8+PGNpcmNsZSBjeD0iMTA0MCIgY3k9IjQ3MCIgcj0iMi40Ii8+PGNpcmNsZSBjeD0iNzAwIiBjeT0iNzYwIiByPSIyLjIiLz48Y2lyY2xlIGN4PSIyMDAiIGN5PSIzMDAiIHI9IjIiLz48Y2lyY2xlIGN4PSIxMjAwIiBjeT0iNjQwIiByPSIyIi8+PC9nPjwvc3ZnPg=="),
-        radial-gradient(1100px 560px at 12% -10%, rgba(56, 189, 248, 0.10), transparent 62%),
-        radial-gradient(950px 520px at 88% -4%, rgba(129, 90, 246, 0.12), transparent 58%),
-        radial-gradient(900px 720px at 50% 116%, rgba(30, 64, 175, 0.16), transparent 60%),
-        linear-gradient(165deg, #070B14 0%, #0A101E 48%, #080C17 100%) !important;
-    background-repeat: repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat !important;
-    background-size: 200px 200px, cover, auto, auto, auto, auto !important;
-    background-position: 0 0, center top, 0 0, 0 0, 0 0, 0 0 !important;
-    background-attachment: scroll, fixed, scroll, scroll, scroll, scroll !important;
+/* 主题背景：原「航线图」矢量纹理下线，画面交给页面最底层的 .tv-bg 图片轮播。
+   这里只留 html/body 的深色底：图片加载前后都不闪白，也是遮罩之外的最终底色。 */
+html, body {
+    background: #070B14 !important;
+}
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"] {
+    background: transparent !important;
 }
 
 /* 侧边栏：悬浮感（右侧柔和投影，而非生硬切一刀） */
@@ -1613,12 +1752,66 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card) .stButton > button
     font-size: 12px;
     color: #7C8CA3;
 }
+
+/* ==========================================================================
+   全屏动态背景：图片交叉淡入淡出 + 暗色遮罩
+   .tv-bg / .tv-bg-img 由 background_html() 按目的地级联生成，
+   每张图的动画名 tvbgN 与时长写在元素内联 style 上，这里只定公共样式。
+   ========================================================================== */
+.tv-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;                       /* 沉到所有内容之下、html 深色底之上 */
+    overflow: hidden;
+    pointer-events: none;
+}
+.tv-bg-img {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    will-change: opacity, transform;
+}
+/* 遮罩：整体压暗 + 四角渐深，再叠原品牌的蓝紫径向光晕与噪点，保证文字与卡片可读 */
+.tv-bg-mask {
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(180deg, rgba(7, 11, 20, 0.82) 0%, rgba(7, 11, 20, 0.66) 42%, rgba(7, 11, 20, 0.88) 100%),
+        radial-gradient(120% 88% at 50% 38%, rgba(7, 11, 20, 0) 28%, rgba(4, 7, 15, 0.72) 100%),
+        radial-gradient(1100px 560px at 12% -10%, rgba(56, 189, 248, 0.12), transparent 62%),
+        radial-gradient(950px 520px at 88% -4%, rgba(129, 90, 246, 0.14), transparent 58%),
+        url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIj48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44NSIgbnVtT2N0YXZlcz0iMyIgc3RpdGNoVGlsZXM9InN0aXRjaCIvPjxmZUNvbG9yTWF0cml4IHR5cGU9InNhdHVyYXRlIiB2YWx1ZXM9IjAiLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsdGVyPSJ1cmwoI24pIiBvcGFjaXR5PSIwLjA1NSIvPjwvc3ZnPg==");
+    background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat;
+    background-size: auto, auto, auto, auto, 200px 200px;
+}
+/* 背景换成实景照片后，小字需要一层投影才压得住亮色画面（如成都茶灯笼那张） */
+.hero-title, .hero-sub, .rec-scope, .rec-tip {
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+}
+/* 行程结果页：背景只当氛围，压暗降饱和，避免长时间读表格时被轮播抢注意力 */
+.tv-bg[data-mode="result"] .tv-bg-img {
+    filter: brightness(0.55) saturate(0.85);
+}
+/* 侧边栏改为半透明：背景的流动感能透出来，blur + 高墨底仍保证表单对比度 */
+section[data-testid="stSidebar"] {
+    background: rgba(11, 17, 30, 0.78) !important;
+    backdrop-filter: blur(18px) saturate(115%);
+}
+/* 用户偏好「减少动态效果」时，只保留当前图组的第一张，停掉轮播与推近 */
+@media (prefers-reduced-motion: reduce) {
+    .tv-bg-img { animation: none !important; opacity: 0; }
+    .tv-bg-img:first-child { opacity: 1; }
+}
 </style>
 """
 
 
 def inject_css() -> None:
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+    # 背景层紧跟 CSS 之后：它是正文第一个元素，内容不变时 rerun 不会重发，动画不被打断
+    st.markdown(background_html(), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
