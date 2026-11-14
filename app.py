@@ -243,7 +243,7 @@ PRESETS: list[dict[str, Any]] = [
         "key": "meizhou",
         "icon": "👴",
         "tag": "🔥 爆款",
-        "img": "https://images.unsplash.com/photo-1543827184-15b360776d3e?q=80&w=800&auto=format&fit=crop",
+        "img": "https://images.unsplash.com/photo-1760898684796-02e46d5053c4?q=80&w=900&auto=format&fit=crop",
         "title": "梅州客都悠闲 2 日游",
         "desc": "带老人慢节奏，围龙屋与客家博物馆",
         "payload": {
@@ -260,7 +260,7 @@ PRESETS: list[dict[str, Any]] = [
         "key": "shanghai",
         "icon": "🏙️",
         "tag": "🎨 室内避雨",
-        "img": "https://images.unsplash.com/photo-1554907984-15263bfd63bd?q=80&w=800&auto=format&fit=crop",
+        "img": "https://images.unsplash.com/photo-1735605917461-4c1b77a6616f?q=80&w=900&auto=format&fit=crop",
         "title": "上海室内看展打卡",
         "desc": "美术馆 + 展览，雨天也不怕",
         "payload": {
@@ -277,7 +277,7 @@ PRESETS: list[dict[str, Any]] = [
         "key": "chuanxi",
         "icon": "🏔️",
         "tag": "🏔️ 风光大片",
-        "img": "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?q=80&w=800&auto=format&fit=crop",
+        "img": "https://images.unsplash.com/photo-1663145765508-a79f2d968ccc?q=80&w=900&auto=format&fit=crop",
         "title": "川西自驾特种兵 3 日",
         "desc": "高原风光与观景点，密度拉满",
         "payload": {
@@ -296,42 +296,92 @@ PRESETS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 # 目的地级联推荐数据：全国池 / 省级 / 市级，全部由 CITY_CARDS 派生
 # ---------------------------------------------------------------------------
-U = "https://images.unsplash.com/photo-"
-Q = "?q=80&w=800&auto=format&fit=crop"
+def _img(photo_id: str) -> str:
+    """拼接 Unsplash 固定图源：统一 900 宽、等比裁切，保证卡片清晰度。"""
+    return f"https://images.unsplash.com/{photo_id}?q=80&w=900&auto=format&fit=crop"
+
+
+# 卡片配图：每座城市 6 张，顺序与下面 RAW / EXTRA_RAW 的卡片一一对应。
+# 选图原则：画面必须与该行程的文案同义（熊猫配熊猫、水利工程配堰坝），
+# 不再复用「看起来像风景」的随机图，避免出现成都配罗马斗兽场这类错配。
 IMG = {
-    'gz1': U + "1545893835-abaa50cbe628" + Q,
-    'gz2': U + "1508804185872-d7badad00f7d" + Q,
-    'gz3': U + "1528127269322-539801943592" + Q,
-    'mz1': U + "1543827184-15b360776d3e" + Q,
-    'mz2': U + "1517760444937-f6397edcbbcd" + Q,
-    'mz3': U + "1441974231531-c6227db76b6e" + Q,
-    'sz1': U + "1540959733332-eab4deabeeaf" + Q,
-    'sz2': U + "1503899036084-c55cdd92da26" + Q,
-    'sz3': U + "1499856871958-5b9627545d1a" + Q,
-    'cd1': U + "1552832230-c0197dd311b5" + Q,
-    'cd2': U + "1526481280693-3bfa7568e0f3" + Q,
-    'cd3': U + "1507525428034-b723cf961d3e" + Q,
-    'gzz1': U + "1464822759023-fed622ff2c3b" + Q,
-    'gzz2': U + "1506905925346-21bda4d32df4" + Q,
-    'gzz3': U + "1519681393784-d120267933ba" + Q,
-    'bj1': U + "1547981609-4b6bfe67ca0b" + Q,
-    'bj2': U + "1528164344705-47542687000d" + Q,
-    'bj3': U + "1469474968028-56623f02e42e" + Q,
-    'sh1': U + "1554907984-15263bfd63bd" + Q,
-    'sh2': U + "1533105079780-92b9be482077" + Q,
-    'sh3': U + "1476514525535-07fb3b4ae5f1" + Q,
-    'hz1': U + "1508804185872-d7badad00f7d" + Q,
-    'hz2': U + "1441974231531-c6227db76b6e" + Q,
-    'hz3': U + "1526481280693-3bfa7568e0f3" + Q,
-    'dl1': U + "1506905925346-21bda4d32df4" + Q,
-    'dl2': U + "1476514525535-07fb3b4ae5f1" + Q,
-    'dl3': U + "1519681393784-d120267933ba" + Q,
-    'xa1': U + "1547981609-4b6bfe67ca0b" + Q,
-    'xa2': U + "1528164344705-47542687000d" + Q,
-    'xa3': U + "1469474968028-56623f02e42e" + Q,
-    'xm1': U + "1507525428034-b723cf961d3e" + Q,
-    'xm2': U + "1499856871958-5b9627545d1a" + Q,
-    'xm3': U + "1540959733332-eab4deabeeaf" + Q,
+    # 梅州：围龙屋 / 客家古建 / 茶田 / 古村 / 客家菜 / 温泉
+    "mz1": _img("photo-1760898684796-02e46d5053c4"),
+    "mz2": _img("photo-1745989498560-a1f1cd9fa17a"),
+    "mz3": _img("photo-1743401462369-44e568d93027"),
+    "mz4": _img("photo-1784534922907-ba17e790010a"),
+    "mz5": _img("photo-1789999376136-f55049c3a26d"),
+    "mz6": _img("photo-1783094724116-ff5f8362a581"),
+    # 广州：早茶 / 广州塔 / 长隆 / 沙面 / 珠江夜游 / 白云山
+    "gz1": _img("photo-1763994679303-fa1f6a7bf687"),
+    "gz2": _img("photo-1563090162-6b4c2a20d658"),
+    "gz3": _img("photo-1534567110243-8875d64ca8ff"),
+    "gz4": _img("photo-1665581378780-6950687b0806"),
+    "gz5": _img("photo-1649147857403-ea32b99fc0b8"),
+    "gz6": _img("photo-1663145766163-8cca1253b6c9"),
+    # 深圳：深圳湾 / 创意园 / 科技馆 / 海洋馆 / 大鹏海岸 / 美食
+    "sz1": _img("photo-1661178581714-a344b67c8691"),
+    "sz2": _img("photo-1569783721854-33a99b4c0bae"),
+    "sz3": _img("photo-1764253340517-9adc9a839970"),
+    "sz4": _img("photo-1769234428281-c108a6053cd3"),
+    "sz5": _img("photo-1660723257840-9155e2de0745"),
+    "sz6": _img("photo-1707013533606-62919aa3aa29"),
+    # 成都：熊猫 / 老城 / 都江堰 / 熊猫义工 / 川菜 / 青城后山
+    "cd1": _img("photo-1540126034813-121bf29033d2"),
+    "cd2": _img("photo-1713844114227-da3cba9ca5d1"),
+    "cd3": _img("photo-1792756459557-363f49a35e73"),
+    "cd4": _img("photo-1566487097168-e91a4f38bee2"),
+    "cd5": _img("photo-1791409700484-e755b72c2b00"),
+    "cd6": _img("photo-1792756459951-c6b19c5828c5"),
+    # 甘孜：公路 / 新都桥 / 亚丁 / 日出 / 露营 / 草原
+    "gzz1": _img("photo-1663145765508-a79f2d968ccc"),
+    "gzz2": _img("photo-1652240166694-fa264d1519af"),
+    "gzz3": _img("photo-1604688510517-5fb678ad4ab3"),
+    "gzz4": _img("photo-1514241516423-6c0a5e031aa2"),
+    "gzz5": _img("photo-1517824806704-9040b037703b"),
+    "gzz6": _img("photo-1790157965324-c2e0b9df5286"),
+    # 北京：故宫 / 长城 / 胡同 / 烤鸭 / 博物馆 / 京郊长城
+    "bj1": _img("photo-1547981609-4b6bfe67ca0b"),
+    "bj2": _img("photo-1508804185872-d7badad00f7d"),
+    "bj3": _img("photo-1772764058009-e6cb2203d773"),
+    "bj4": _img("photo-1765743691388-6a5608004b9c"),
+    "bj5": _img("photo-1787244719525-358519ca2439"),
+    "bj6": _img("photo-1608037521277-154cd1b89191"),
+    # 上海：看展 / 外滩 / 咖啡 / 科技馆 / 舞台 / 本帮菜
+    "sh1": _img("photo-1735605917461-4c1b77a6616f"),
+    "sh2": _img("photo-1535356795203-50b2eb73f96c"),
+    "sh3": _img("photo-1511081692775-05d0f180a065"),
+    "sh4": _img("photo-1764253340521-c920fd89a66e"),
+    "sh5": _img("photo-1503095396549-807759245b35"),
+    "sh6": _img("photo-1789999375823-87fa75e49ff1"),
+    # 杭州：西湖 / 龙井 / 西溪 / 灵隐 / 环湖 / 运河
+    "hz1": _img("photo-1587153662967-c9d9977bf8d3"),
+    "hz2": _img("photo-1743402810466-29a840f2c053"),
+    "hz3": _img("photo-1786503316136-6235c13c7b49"),
+    "hz4": _img("photo-1701070658926-5a7844890fb6"),
+    "hz5": _img("photo-1669532055370-b0c282cb115f"),
+    "hz6": _img("photo-1782662235606-2adc36529512"),
+    # 大理：洱海 / 苍山 / 古城 / 喜洲 / 双廊 / 茶马古道
+    "dl1": _img("photo-1690529070388-e259c3c31900"),
+    "dl2": _img("photo-1715468932667-84581433613e"),
+    "dl3": _img("photo-1794128774564-bd2b764e2218"),
+    "dl4": _img("photo-1791446602731-45b8019bc147"),
+    "dl5": _img("photo-1615874334296-35adc00bf71e"),
+    "dl6": _img("photo-1787707260408-8d863a115c73"),
+    # 西安：兵马俑 / 古都 / 大唐不夜城 / 回民街 / 陕历博 / 华山
+    "xa1": _img("photo-1510108047773-263cc794fca3"),
+    "xa2": _img("photo-1614555383820-941c466f1b52"),
+    "xa3": _img("photo-1720451112427-1b93478b7417"),
+    "xa4": _img("photo-1766801884391-bb142e51ca1f"),
+    "xa5": _img("photo-1547253858-a72b17d5d455"),
+    "xa6": _img("photo-1603127647343-16c5d38642e6"),
+    # 厦门：鼓浪屿 / 海边 / 小吃 / 环岛路 / 集美 / 沙坡尾
+    "xm1": _img("photo-1709229919646-3699ead369b5"),
+    "xm2": _img("photo-1596188126441-41279e8f5e46"),
+    "xm3": _img("photo-1604632910793-c0601f361b34"),
+    "xm4": _img("photo-1648530021055-9d634c546d51"),
+    "xm5": _img("photo-1786784962183-80d2cec02bf8"),
+    "xm6": _img("photo-1697916193589-8f5706bf3c30"),
 }
 
 # (tag, img, title, desc, days, people, budget, companions, preferences, request)
@@ -383,11 +433,11 @@ RAW = {
          ["带老人"], ["少走路/休闲游", "文化历史"], "带爸妈来，别太累"),
         ("🎨 展览与胡同", 'bj3', "北京看展 + 胡同 2 日", "798、国博，顺路逛南锣鼓巷", 2, 2, 3600,
          ["独自出行"], ["室内为主", "出片率高"], "想看展，也想去胡同里走走"),
-        ("🍜 京味美食", 'bj1', "北京小吃深度 2 日", "豆汁、卤煮、烤鸭，两天吃个遍", 2, 2, 3200,
+        ("🍜 京味美食", 'bj4', "北京小吃深度 2 日", "豆汁、卤煮、烤鸭，两天吃个遍", 2, 2, 3200,
          ["朋友结伴"], ["美食为主"], "以吃为主，想吃地道小吃"),
-        ("🎓 亲子研学", 'bj2', "北京亲子研学 3 日", "科技馆 + 天文馆 + 动物园", 3, 3, 5800,
+        ("🎓 亲子研学", 'bj5', "北京亲子研学 3 日", "科技馆 + 天文馆 + 动物园", 3, 3, 5800,
          ["带小孩", "亲子家庭"], ["亲子友好", "室内为主"], "孩子 8 岁，想安排研学类场馆"),
-        ("⛰️ 京郊徒步", 'bj3', "京郊长城徒步 2 日", "野长城 + 民宿，人少景好", 2, 2, 2800,
+        ("⛰️ 京郊徒步", 'bj6', "京郊长城徒步 2 日", "野长城 + 民宿，人少景好", 2, 2, 2800,
          ["朋友结伴"], ["户外自然", "出片率高"], "想走人少的野长城"),
     ],
     "上海市": [
@@ -397,11 +447,11 @@ RAW = {
          ["情侣/夫妻"], ["出片率高", "夜景为主"], "想看外滩夜景"),
         ("🍰 咖啡与弄堂", 'sh3', "上海咖啡漫步 2 日", "梧桐区小店、弄堂、老洋房", 2, 2, 3800,
          ["独自出行"], ["美食为主", "出片率高"], "想喝咖啡、逛小店，节奏轻松"),
-        ("👶 亲子科技馆", 'sh1', "上海亲子 2 日", "科技馆 + 自然博物馆", 2, 3, 4600,
+        ("👶 亲子科技馆", 'sh4', "上海亲子 2 日", "科技馆 + 自然博物馆", 2, 3, 4600,
          ["带小孩"], ["亲子友好", "室内为主"], "孩子 7 岁，想去科技馆"),
-        ("🎭 演出与夜游", 'sh2', "上海看剧 + 浦江夜游 2 日", "下午看剧，晚上坐船", 2, 2, 5200,
+        ("🎭 演出与夜游", 'sh5', "上海看剧 + 浦江夜游 2 日", "下午看剧，晚上坐船", 2, 2, 5200,
          ["情侣/夫妻"], ["室内为主", "夜景为主"], "想看一场话剧，再坐船夜游"),
-        ("🥢 本帮菜小馆", 'sh3', "上海本帮菜 2 日", "老字号与本帮小馆，一天三顿", 2, 2, 3400,
+        ("🥢 本帮菜小馆", 'sh6', "上海本帮菜 2 日", "老字号与本帮小馆，一天三顿", 2, 2, 3400,
          ["朋友结伴"], ["美食为主"], "主要想吃本帮菜"),
     ],
     "杭州市": [
@@ -463,7 +513,6 @@ def _build_card(city, idx, row):
 # ---------------------------------------------------------------------------
 # 补齐数据：每个城市凑满 6 条，保证市级联动正好 6 张卡片
 # ---------------------------------------------------------------------------
-EXTRA_IMAGES = {'mz4': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'mz5': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'mz6': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'gz4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'gz5': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'gz6': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'sz4': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop', 'sz5': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'sz6': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'cd4': 'https://images.unsplash.com/photo-1518186285589-2f7649de83e0?q=80&w=800&auto=format&fit=crop', 'cd5': 'https://images.unsplash.com/photo-1547981609-4b6bfe67ca0b?q=80&w=800&auto=format&fit=crop', 'cd6': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'gzz4': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'gzz5': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'gzz6': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'bj4': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'bj5': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'bj6': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'sh4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'sh5': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'sh6': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop', 'hz4': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'hz5': 'https://images.unsplash.com/photo-1547981609-4b6bfe67ca0b?q=80&w=800&auto=format&fit=crop', 'hz6': 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=800&auto=format&fit=crop', 'dl4': 'https://images.unsplash.com/photo-1528181304800-259b08848526?q=80&w=800&auto=format&fit=crop', 'dl5': 'https://images.unsplash.com/photo-1477587458883-47145ed94245?q=80&w=800&auto=format&fit=crop', 'dl6': 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=800&auto=format&fit=crop', 'xa4': 'https://images.unsplash.com/photo-1533050487297-09b450131914?q=80&w=800&auto=format&fit=crop', 'xa5': 'https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop', 'xa6': 'https://images.unsplash.com/photo-1555992336-fb0d29498b13?q=80&w=800&auto=format&fit=crop', 'xm4': 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?q=80&w=800&auto=format&fit=crop', 'xm5': 'https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?q=80&w=800&auto=format&fit=crop', 'xm6': 'https://images.unsplash.com/photo-1559827260-dc66d52bef19?q=80&w=800&auto=format&fit=crop'}
 
 EXTRA_RAW: dict[str, list[tuple]] = {'梅州市': [('🏛️ 古村探访', 'mz4', '梅州古村落 2 日', '桥溪古村 + 松口古镇，慢走细看', 2, 2, 2400, ['带老人'], ['少走路/休闲游', '文化历史'], '想看老屋和古村，路别太陡'), ('🍚 客家美食', 'mz5', '梅州客家菜 2 日', '盐焗鸡、酿豆腐、腌面一天吃遍', 2, 2, 2200, ['朋友结伴'], ['美食为主'], '以吃为主，想吃地道客家菜'), ('♨️ 温泉康养', 'mz6', '梅州温泉康养 3 日', '泡汤 + 山间散步，节奏最松', 3, 2, 3600, ['带老人', '情侣/夫妻'], ['少走路/休闲游'], '主要想泡温泉休息')], '广州市': [('🏛️ 沙面建筑', 'gz4', '广州沙面 + 永庆坊 2 日', '老洋房与骑楼，拍照不重样', 2, 2, 2900, ['情侣/夫妻'], ['出片率高', '文化历史'], '想拍老建筑'), ('🚢 珠江夜游', 'gz5', '广州夜游 + 北京路 2 日', '白天逛博物馆，晚上坐船', 2, 2, 3000, ['朋友结伴'], ['夜景为主', '美食为主'], '想看夜景，顺便吃小吃'), ('🌳 白云山轻徒步', 'gz6', '广州白云山 + 越秀 2 日', '半天上山，半天老城', 2, 3, 2600, ['亲子家庭'], ['户外自然', '亲子友好'], '想爬不难的山，孩子也能走')], '深圳市': [('🐬 亲子海洋', 'sz4', '深圳海洋亲子 2 日', '海洋馆 + 红树林，孩子放电', 2, 3, 3800, ['带小孩', '亲子家庭'], ['亲子友好', '室内为主'], '孩子想看海洋动物'), ('🏖️ 大鹏半岛', 'sz5', '深圳大鹏海边 2 日', '较场尾住一晚，早起看日出', 2, 2, 3600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想住海边看日出'), ('🍜 城中美食', 'sz6', '深圳美食扫街 2 日', '从东门到蛇口，一路吃过去', 2, 2, 3000, ['朋友结伴'], ['美食为主'], '主要想吃，越本地越好')], '成都市': [('🎋 熊猫义工', 'cd4', '成都熊猫义工 2 日', '近距离喂食，孩子最爱的项目', 2, 3, 4200, ['带小孩', '亲子家庭'], ['亲子友好', '室内为主'], '孩子想看熊猫，最好能近距离'), ('🍲 川菜寻味', 'cd5', '成都川菜寻味 3 日', '苍蝇馆子到私房菜，一日三餐', 3, 2, 3400, ['朋友结伴'], ['美食为主'], '以吃为主，能吃辣'), ('🏞️ 青城后山', 'cd6', '成都青城后山 2 日', '避暑、走溪谷、住山间民宿', 2, 2, 2800, ['情侣/夫妻'], ['户外自然', '少走路/休闲游'], '想避暑，走点平缓山路')], '甘孜州': [('🌄 日出观景', 'gzz4', '川西日出观景 3 日', '子梅垭口守日出，值回票价', 3, 2, 7800, ['朋友结伴'], ['出片率高', '户外自然', '特种兵拉练'], '愿意凌晨起床看日出'), ('🏕️ 高原露营', 'gzz5', '川西高原露营 3 日', '湖边扎营，夜里看星空', 3, 2, 8200, ['朋友结伴'], ['户外自然', '特种兵拉练'], '想露营看星空'), ('🐎 草原牧歌', 'gzz6', '川西草原环线 3 日', '塔公草原骑马，慢慢晃', 3, 2, 7600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想在草原上待着，不想赶')], '北京市': [('🎭 京味曲艺', 'bj4', '北京相声 + 老舍茶馆 2 日', '下午听相声，晚上喝盖碗茶', 2, 2, 3200, ['带老人'], ['文化历史', '室内为主'], '想看传统曲艺'), ('🏛️ 国博深度', 'bj5', '北京博物馆深度 3 日', '国博、首博、大运河馆', 3, 2, 4000, ['独自出行'], ['室内为主', '文化历史'], '想看博物馆，一天一个'), ('🍂 香山秋色', 'bj6', '北京香山 + 植物园 2 日', '秋天看红叶，缆车上山', 2, 2, 2600, ['情侣/夫妻'], ['户外自然', '出片率高'], '想爬山看红叶，能坐缆车')], '上海市': [('🏛️ 外滩建筑', 'sh4', '上海外滩建筑漫步 2 日', '万国建筑群 + 邬达克作品', 2, 2, 4200, ['独自出行'], ['文化历史', '出片率高'], '想认真看老建筑'), ('🛍️ 梧桐逛街', 'sh5', '上海梧桐区逛街 2 日', '安福路、武康路、愚园路', 2, 2, 4000, ['情侣/夫妻'], ['美食为主', '出片率高'], '想逛街拍照，节奏轻松'), ('🎠 亲子迪士尼', 'sh6', '上海迪士尼 2 日', '两天一园，孩子玩到闭园', 2, 3, 6800, ['带小孩', '亲子家庭'], ['亲子友好', '出片率高'], '以迪士尼为主，孩子 6 岁')], '杭州市': [('🏯 灵隐古刹', 'hz4', '杭州灵隐 + 法喜寺 2 日', '古刹与茶园，安静的一条线', 2, 2, 3000, ['带老人'], ['文化历史', '少走路/休闲游'], '想逛寺庙，路平一点'), ('🚴 环湖骑行', 'hz5', '杭州环西湖骑行 2 日', '早起绕湖一圈，中午喝茶', 2, 2, 2800, ['朋友结伴'], ['户外自然', '出片率高'], '想骑车绕西湖'), ('🎨 运河街区', 'hz6', '杭州运河 + 小河直街 2 日', '老厂房改的街区，咖啡馆多', 2, 2, 3200, ['情侣/夫妻'], ['室内为主', '出片率高'], '想逛文创街区')], '大理市': [('🏘️ 喜洲古镇', 'dl4', '大理喜洲 + 海舌 2 日', '白族民居与稻田，出片稳', 3, 2, 4000, ['情侣/夫妻'], ['出片率高', '文化历史'], '想拍白族建筑'), ('🌅 双廊日出', 'dl5', '大理双廊住两晚 3 日', '推窗就是洱海，什么都不做', 3, 2, 4800, ['情侣/夫妻'], ['少走路/休闲游', '出片率高'], '想住海景房，躺着看日出'), ('🐎 苍山茶马古道', 'dl6', '大理茶马古道 3 日', '骑马走古道，下午回古城', 3, 2, 4400, ['朋友结伴'], ['户外自然', '文化历史'], '想走茶马古道')], '西安市': [('🍜 回民街小吃', 'xa4', '西安小吃深度 2 日', '泡馍、肉夹馍、甑糕一天六顿', 2, 2, 2800, ['朋友结伴'], ['美食为主'], '以吃为主，想扫街'), ('🏛️ 陕西历史', 'xa5', '西安博物馆 2 日', '陕历博 + 碑林，一天看不完', 2, 2, 3000, ['独自出行'], ['室内为主', '文化历史'], '想看文物和碑刻'), ('🏔️ 华山论剑', 'xa6', '西安 + 华山 3 日', '一天西安，一天华山上下', 3, 2, 4200, ['朋友结伴'], ['户外自然', '特种兵拉练'], '想爬华山，体力还行')], '厦门市': [('🌊 环岛路骑行', 'xm4', '厦门环岛路 2 日', '海边骑车，傍晚看日落', 2, 2, 3200, ['情侣/夫妻'], ['户外自然', '出片率高'], '想骑车看海'), ('🏛️ 集美学村', 'xm5', '厦门集美 + 曾厝垵 2 日', '嘉庚建筑与文艺小店', 2, 2, 3000, ['独自出行'], ['文化历史', '出片率高'], '想看老建筑和逛小店'), ('🐚 亲子沙坡尾', 'xm6', '厦门亲子海边 3 日', '沙滩、科技馆、海鲜市场', 3, 3, 4400, ['带小孩', '亲子家庭'], ['亲子友好', '美食为主'], '孩子想玩沙吃海鲜')]}
 
@@ -472,7 +521,6 @@ for _city, _rows in EXTRA_RAW.items():
     _have = len(RAW.setdefault(_city, []))
     if _have < 6:
         RAW[_city].extend(_rows[: 6 - _have])
-IMG.update(EXTRA_IMAGES)
 
 
 CITY_CARDS = {
@@ -543,12 +591,8 @@ def pick_recommendations(limit: int = 6) -> tuple[list[dict[str, Any]], str]:
 # ---------------------------------------------------------------------------
 GLOBAL_CSS = """
 <style>
-/* 1. 全局背景：深灰蓝 */
+/* 1. 全局背景：交给下方「维度一」的主题背景统一接管，这里只定文字色 */
 .stApp {
-    background:
-        radial-gradient(1200px 600px at 12% -10%, rgba(59,130,246,0.16), transparent 60%),
-        radial-gradient(1000px 520px at 88% 0%, rgba(139,92,246,0.16), transparent 55%),
-        #0F172A !important;
     color: #E2E8F0;
 }
 
@@ -1041,11 +1085,21 @@ section[data-testid="stSidebar"] [data-testid="stCheckbox"] p {
    ========================================================================== */
 
 /* ---------- 维度一：背景与层次 ---------- */
+/* 主题背景：极暗「航线图」矢量纹理 + 噪点 + 深蓝→深紫径向光晕。
+   所有肌理都压在 5%~10% 可见度，只负责氛围，不抢文字与卡片。 */
 .stApp {
-    background:
-        radial-gradient(1100px 560px at 14% -8%, rgba(59, 130, 246, 0.14), transparent 62%),
-        radial-gradient(900px 480px at 86% -2%, rgba(139, 92, 246, 0.14), transparent 58%),
-        #0B1120 !important;
+    background-color: #070B14 !important;
+    background-image:
+        url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIj48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44NSIgbnVtT2N0YXZlcz0iMyIgc3RpdGNoVGlsZXM9InN0aXRjaCIvPjxmZUNvbG9yTWF0cml4IHR5cGU9InNhdHVyYXRlIiB2YWx1ZXM9IjAiLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsdGVyPSJ1cmwoI24pIiBvcGFjaXR5PSIwLjA1NSIvPjwvc3ZnPg=="),
+        url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNDQwIiBoZWlnaHQ9IjkwMCIgdmlld0JveD0iMCAwIDE0NDAgOTAwIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiM3REQzRkMiIHN0cm9rZS1vcGFjaXR5PSIwLjEwIiBzdHJva2Utd2lkdGg9IjEuMSI+PHBhdGggZD0iTS00MCAzMDAgUSAyNDAgMTUwIDUyMCAyNjAgVCAxMDAwIDIwMCBUIDE0ODAgMzIwIi8+PHBhdGggZD0iTS00MCA2MjAgUSAyNjAgNDYwIDU2MCA1NDAgVCAxMDQwIDQ3MCBUIDE0ODAgNjAwIi8+PHBhdGggZD0iTTEyMCA5NDAgUSAzODAgNzAwIDcwMCA3NjAgVCAxMTgwIDY5MCBUIDE0ODAgODAwIi8+PC9nPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0E3OEJGQSIgc3Ryb2tlLW9wYWNpdHk9IjAuMDkiIHN0cm9rZS13aWR0aD0iMSIgc3Ryb2tlLWRhc2hhcnJheT0iMiA4Ij48cGF0aCBkPSJNLTQwIDQ1MCBRIDMwMCAzODAgNjQwIDQyMCBUIDE0ODAgNDAwIi8+PHBhdGggZD0iTTIwMCAtNDAgUSAzNjAgMzAwIDcwMCAzODAgVCAxMjAwIDQyMCBUIDE0ODAgMzgwIi8+PC9nPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzM4QkRGOCIgc3Ryb2tlLW9wYWNpdHk9IjAuMDciIHN0cm9rZS13aWR0aD0iMC45IiBzdHJva2UtZGFzaGFycmF5PSIxIDExIj48cGF0aCBkPSJNLTIwIDEyMCBRIDQyMCA2MCA5MDAgMTMwIFQgMTQ4MCA5MCIvPjxwYXRoIGQ9Ik0tMjAgNzYwIFEgNDYwIDgyMCA5ODAgNzQwIFQgMTQ4MCA3ODAiLz48L2c+PGcgZmlsbD0iIzdERDNGQyIgZmlsbC1vcGFjaXR5PSIwLjE2Ij48Y2lyY2xlIGN4PSI1MjAiIGN5PSIyNjAiIHI9IjIuNiIvPjxjaXJjbGUgY3g9IjEwMDAiIGN5PSIyMDAiIHI9IjIuNiIvPjxjaXJjbGUgY3g9IjU2MCIgY3k9IjU0MCIgcj0iMi40Ii8+PGNpcmNsZSBjeD0iMTA0MCIgY3k9IjQ3MCIgcj0iMi40Ii8+PGNpcmNsZSBjeD0iNzAwIiBjeT0iNzYwIiByPSIyLjIiLz48Y2lyY2xlIGN4PSIyMDAiIGN5PSIzMDAiIHI9IjIiLz48Y2lyY2xlIGN4PSIxMjAwIiBjeT0iNjQwIiByPSIyIi8+PC9nPjwvc3ZnPg=="),
+        radial-gradient(1100px 560px at 12% -10%, rgba(56, 189, 248, 0.10), transparent 62%),
+        radial-gradient(950px 520px at 88% -4%, rgba(129, 90, 246, 0.12), transparent 58%),
+        radial-gradient(900px 720px at 50% 116%, rgba(30, 64, 175, 0.16), transparent 60%),
+        linear-gradient(165deg, #070B14 0%, #0A101E 48%, #080C17 100%) !important;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat !important;
+    background-size: 200px 200px, cover, auto, auto, auto, auto !important;
+    background-position: 0 0, center top, 0 0, 0 0, 0 0, 0 0 !important;
+    background-attachment: scroll, fixed, scroll, scroll, scroll, scroll !important;
 }
 
 /* 侧边栏：悬浮感（右侧柔和投影，而非生硬切一刀） */
@@ -1096,11 +1150,11 @@ div[data-testid="stNumberInputContainer"]:has(input:focus) {
     margin: 0 0 8px 0;
 }
 .hero-sub {
-    font-size: 13.5px;
-    color: #7C8CA3;
-    opacity: 0.92;
-    line-height: 1.9;
-    margin: 16px auto 0 auto;
+    font-size: 12px;
+    color: #6B7A90;
+    opacity: 0.55;
+    line-height: 1.85;
+    margin: 14px auto 0 auto;
 }
 
 /* 侧边栏分组标题：放大加粗 + 下方留白，与控件分离 */
@@ -1214,10 +1268,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > b
    纯视觉覆盖，放在最后；不动任何级联、表单状态与业务逻辑。
    ========================================================================== */
 
-/* ---------- 三、收敛光污染：统一 #0F172A，去掉上下色差 ---------- */
-.stApp {
-    background: #0F172A !important;
-}
+/* ---------- 三、收敛光污染：不再压平背景，航线纹理统一由上方 .stApp 控制 ---------- */
 /* 干掉 V2 的紫色光晕 */
 .hero::before {
     content: none !important;
@@ -1240,9 +1291,9 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.preset-title) .stButton > b
     margin: 0 0 10px 0;
 }
 .hero-sub {
-    color: #8C9AAF !important;
-    opacity: 1;
-    font-size: 14px;
+    color: #64748B !important;
+    opacity: 0.55;
+    font-size: 12px;
     font-weight: 400;
 }
 
@@ -1439,6 +1490,13 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc-card):hover {
     overflow: hidden;
     border-radius: 16px 16px 0 0;
     background: #1E293B;
+    /* 入场动画：每次目的地切换、卡片内容被重新渲染时都会重新播放 */
+    animation: cardRiseIn 0.4s ease-out both;
+    will-change: transform, opacity;
+}
+@keyframes cardRiseIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 .pc-img {
     position: absolute;
@@ -1724,15 +1782,17 @@ def render_empty_state() -> None:
         unsafe_allow_html=True,
     )
 
-    for row in (cards[0:3], cards[3:6]):
+    for row_idx, row in enumerate((cards[0:3], cards[3:6])):
         if not row:
             continue
         cols = st.columns(3, gap="medium")
-        for col, preset in zip(cols, row):
+        for col_idx, (col, preset) in enumerate(zip(cols, row)):
             with col:
                 with card():
+                    # 同一排的卡片依次延迟 60ms 出现，形成「依次飘上来」的错落感
+                    delay = (row_idx * 3 + col_idx) * 60
                     st.markdown(
-                        "<div class='pc-card'>"
+                        f"<div class='pc-card' style='animation-delay:{delay}ms'>"
                         f"<div class='pc-img' style=\"background-image:url('{preset['img']}')\"></div>"
                         "<div class='pc-shade'></div>"
                         f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
