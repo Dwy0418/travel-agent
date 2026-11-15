@@ -975,7 +975,9 @@ div[data-testid="stDecoration"] { display: none !important; }
 div[data-testid="stToolbar"] { right: 1rem; }
 section.main > div.block-container,
 div[data-testid="stAppViewContainer"] .block-container {
-    padding-top: 2.4rem;
+    /* stHeader 高 60px 且压在内容之上：2.4rem(38px) 会让主标题顶进去 7px，
+       Cloud 上还会和 Share/编辑 那一排图标打架。留到 72px 起，同时不回到原来 6rem 的松散感。 */
+    padding-top: clamp(72px, 8vh, 104px);
     padding-bottom: 3rem;
     /* 原本写死 1320px：收起侧栏腾出的宽度被封顶吃掉，全变成居中的左右留白 */
     max-width: min(100% - clamp(24px, 4vw, 72px), 1760px);
@@ -2094,6 +2096,18 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
     border: 1px solid rgba(148, 163, 184, 0.20);
     border-radius: 18px;
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
+}
+/* 卡片上方再铺一层由透明到深色的渐变：滚动时内容是被「雾」收掉的，
+   而不是被一块硬边板子截断。pointer-events 关掉，不影响点卡片。 */
+.st-key-composer::before {
+    content: "";
+    position: absolute;
+    left: -4vw;
+    right: -4vw;
+    bottom: 100%;
+    height: clamp(64px, 10vh, 120px);
+    background: linear-gradient(180deg, rgba(5, 9, 18, 0) 0%, rgba(5, 9, 18, 0.45) 55%, rgba(5, 9, 18, 0.78) 100%);
+    pointer-events: none;
 }
 .cp-head {
     display: flex;
