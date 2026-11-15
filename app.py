@@ -96,42 +96,6 @@ def full_width_table(rows: Any, **kwargs: Any) -> None:
         st.dataframe(rows, use_container_width=True, **kwargs)
 
 
-def status_box(label: str, *, expanded: bool = True):
-    """执行状态框：优先 st.status；老版本退回 spinner + 占位区。"""
-    factory = getattr(st, "status", None)
-    if callable(factory):
-        try:
-            return factory(label, expanded=expanded)
-        except TypeError:
-            pass
-    return _FallbackStatus(label)
-
-
-class _FallbackStatus:
-    """st.status 的低版本替身：提供 update() 与上下文管理，行为尽量一致。"""
-
-    def __init__(self, label: str) -> None:
-        self.label = label
-        self._box = st.empty()
-        self._box.info(f"⏳ {label}")
-
-    def __enter__(self) -> "_FallbackStatus":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def update(self, *, label: str | None = None, state: str | None = None, expanded: bool | None = None) -> None:
-        self.label = label or self.label
-        icon = {"complete": "✅", "error": "❌", "running": "⏳"}.get(state or "running", "⏳")
-        if state == "error":
-            self._box.error(f"{icon} {self.label}")
-        elif state == "complete":
-            self._box.success(f"{icon} {self.label}")
-        else:
-            self._box.info(f"{icon} {self.label}")
-
-
 # ---------------------------------------------------------------------------
 # 控件选项：同行人带 Emoji，特殊偏好改多选
 # ---------------------------------------------------------------------------
@@ -2415,6 +2379,181 @@ div[data-testid="stMainBlockContainer"] {
     }
 }
 
+/* ---------- 规划进度卡：等待期按真实阶段反馈 ---------- */
+/* 「开始规划」到片头之间最长要等 50 秒上下，没有反馈就像卡死。这张卡与输入卡
+   同一套玻璃材质；进度条宽度只跟 trace 里真实完成的阶段数走，不按秒数推进，
+   所以慢请求也不会跑满卡住；秒表是前端时钟，另有一句提示说明「这是估算」。 */
+.ci-plan-card {
+    max-width: 760px;
+    margin: clamp(2px, 1.2vh, 16px) auto 0;
+    padding: 16px clamp(16px, 2vw, 24px) 14px;
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
+    text-align: left;
+    /* 卡片挂载后会被 trace 反复重绘：提前声明合成层，避免首帧毛玻璃
+       背景还没合成时整张卡发白（Chromium 对新建 backdrop-filter 层的已知抖动） */
+    will-change: backdrop-filter;
+    transform: translateZ(0);
+}
+.ci-plan-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.ci-plan-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 16px;
+    font-weight: 800;
+    color: #FFFFFF;
+}
+.ci-plan-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #60A5FA;
+    box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.18);
+    animation: ci-plan-pulse 1.6s ease-in-out infinite;
+}
+.ci-plan-clock {
+    font-size: 12.5px;
+    color: #9FB2CC;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.ci-plan-clock b {
+    color: #BFDBFE;
+    font-weight: 700;
+}
+.ci-plan-track {
+    position: relative;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.16);
+    overflow: hidden;
+}
+.ci-plan-fill {
+    display: block;
+    position: relative;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(59, 130, 246, 0.85), rgba(56, 189, 248, 0.95));
+    transition: width 0.45s ease;
+    overflow: hidden;
+}
+.ci-plan-fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.45) 50%, transparent 75%);
+    transform: translateX(-100%);
+    animation: ci-plan-shimmer 1.8s ease-in-out infinite;
+}
+.ci-plan-note {
+    margin-top: 8px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: #8FA3BD;
+}
+.ci-plan-steps {
+    list-style: none;
+    margin: 11px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+}
+.ci-plan-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: #8FA3BD;
+}
+.ci-plan-mark {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid rgba(148, 163, 184, 0.36);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10.5px;
+    color: transparent;
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+.ci-plan-step.is-done {
+    color: #CBD5E1;
+}
+.ci-plan-step.is-done .ci-plan-mark {
+    border-color: rgba(52, 211, 153, 0.6);
+    background: rgba(16, 185, 129, 0.18);
+    color: #6EE7B7;
+}
+.ci-plan-step.is-live {
+    color: #FFFFFF;
+    font-weight: 650;
+}
+.ci-plan-step.is-live .ci-plan-mark {
+    border-color: rgba(96, 165, 250, 0.8);
+    background: rgba(59, 130, 246, 0.22);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+    animation: ci-plan-pulse 1.4s ease-in-out infinite;
+}
+.ci-plan-sub {
+    font-size: 11.5px;
+    font-weight: 400;
+    color: #7F93AE;
+}
+.ci-plan-live {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(9, 16, 28, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: #B6C2D4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ci-plan-tag {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.18);
+    color: #93C5FD;
+    font-size: 11px;
+}
+.ci-plan-est {
+    color: #6B7F98;
+}
+@keyframes ci-plan-shimmer {
+    0% { transform: translateX(-100%); }
+    60%, 100% { transform: translateX(100%); }
+}
+@keyframes ci-plan-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .ci-plan-dot,
+    .ci-plan-fill::after,
+    .ci-plan-step.is-live .ci-plan-mark { animation: none; }
+}
+
 /* 详情弹窗：图集两列、视频 16:9，宽屏时并排 */
 [data-testid="stDialog"] .dt-title {
     font-size: 22px;
@@ -3106,6 +3245,75 @@ def _layout_sync_html() -> str:
 def _embed_layout_sync() -> None:
     """在每个渲染轮末尾挂一次高度同步脚本（1px iframe，不占版面）。"""
     html = "<html><body style='margin:0'>" + _layout_sync_html() + "</body></html>"
+    frame = getattr(st, "iframe", None)
+    if callable(frame):
+        try:
+            frame(html, height=1)
+            return
+        except TypeError:
+            pass
+    st_components.html(html, height=0)
+
+
+def _plan_ticker_html(run_id: str) -> str:
+    """进度卡的秒表与提示轮播。
+
+    只做两件事：把 #ci-plan-elapsed 按前端时钟刷新、每 8 秒换一句提示。
+    进度条宽度由服务端按真实阶段重绘，这里绝不碰——避免出现「匀速假进度」。
+    每次规划带一个新的 run_id，父页面据此重置起点，不会沿用上一次的秒数；
+    卡片被清掉后定时器自己停，不会在后面的页面上空转。
+    """
+    return f"""
+<script>
+(function () {{
+  var p = window.parent, doc;
+  try {{ doc = p.document; }} catch (e) {{ return; }}
+  var RUN = "{run_id}";
+  var HINTS = [
+    "这一步通常最花时间，请稍候…",
+    "正在核对真实的地图与天气数据，不会凭空编景点。",
+    "接口偶尔会慢一点；进度只按已完成的阶段走，不会停在假的位置。"
+  ];
+  if (p.__ciPlanRun !== RUN) {{
+    p.__ciPlanRun = RUN;
+    p.__ciPlanStart = Date.now();
+    p.__ciPlanHint = 0;
+  }}
+  function alive() {{ return !!doc.querySelector('.ci-plan-card'); }}
+  function paint() {{
+    if (!alive()) {{
+      clearInterval(p.__ciPlanTimer);
+      p.__ciPlanTimer = null;
+      return;
+    }}
+    var node = doc.getElementById('ci-plan-elapsed');
+    if (node) node.textContent = ((Date.now() - p.__ciPlanStart) / 1000).toFixed(1);
+  }}
+  function rotate() {{
+    if (!alive()) {{
+      clearInterval(p.__ciPlanRotate);
+      p.__ciPlanRotate = null;
+      return;
+    }}
+    var node = doc.getElementById('ci-plan-hint');
+    if (!node) return;
+    p.__ciPlanHint = ((p.__ciPlanHint || 0) + 1) % HINTS.length;
+    node.textContent = HINTS[p.__ciPlanHint];
+  }}
+  paint();
+  if (p.__ciPlanTimer) clearInterval(p.__ciPlanTimer);
+  p.__ciPlanTimer = setInterval(paint, 100);
+  if (p.__ciPlanRotate) clearInterval(p.__ciPlanRotate);
+  p.__ciPlanRotate = setInterval(rotate, 8000);
+}})();
+</script>
+"""
+
+
+def _embed_plan_ticker() -> None:
+    """把秒表脚本塞进 1px iframe（st.iframe 允许同源脚本；老版本退回 components）。"""
+    run_id = str(time.time_ns())
+    html = "<html><body style='margin:0'>" + _plan_ticker_html(run_id) + "</body></html>"
     frame = getattr(st, "iframe", None)
     if callable(frame):
         try:
@@ -4474,34 +4682,152 @@ def agent_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in AGENT_PAYLOAD_KEYS if key in payload}
 
 
+# ---------------------------------------------------------------------------
+# 规划进度：trace 的真实阶段 -> 进度卡上的一行
+# ---------------------------------------------------------------------------
+PLAN_STAGES: tuple[tuple[str, str], ...] = (
+    ("定位目的地", "确认城市中心，天气和路程都以它为准"),
+    ("搜集景点与美食", "从地图数据里挑出值得去的地方和小吃"),
+    ("对比这几天天气", "把户外安排放到不下雨的日子"),
+    ("编排每日行程", "按时间和路程把景点串成顺路的线"),
+    ("复核路线与预算", "检查时间冲突、点间路程和总花费"),
+    # 最后一格在 run() 返回前不会打勾：校验通过后还要汇总预算、拼行程单、
+    # 准备片头。留这一格，进度条就不会在真正完成前先跑到 100% 顶住。
+    ("整理成行程单", "把每天的安排、预算和地图点位汇总起来"),
+)
+
+# trace 里的工具名 -> 阶段序号（与 PLAN_STAGES 的顺序一一对应）
+_PLAN_TOOL_STAGE = {
+    "geocode": 0,
+    "search_poi": 1,
+    "get_weather": 2,
+    "plan_route": 3,
+    "estimate_budget": 4,
+}
+
+# 没有工具名的条目：草稿解析 / 校验 / 预算汇总 / 最终完成。
+# 「模型决策」（decision）故意不算：那时只是决定要调哪些工具，行程还没开始写。
+_PLAN_KIND_STAGE = {
+    "parse_error": 3,
+    "truncated": 3,
+    "validation": 4,
+    "budget": 4,
+    "done": 5,
+}
+
+# 可以直接展示给用户的 trace：这些行本身就是人话（不含坐标与参数名）。
+# 其余类型（校验问题清单等）只取一句固定文案，不把「问题 2：营业时间…」丢给用户。
+_PLAN_LIVE_KINDS = {"tool_call", "tool_result", "prepare", "cache", "constraint"}
+_PLAN_LIVE_FALLBACK = {
+    "decision": "正在挑下一个要查的地点…",
+    "validation": "正在复核每天的时间与路程安排…",
+    "issue": "发现一处时间冲突，正在重新排一次…",
+    "parse_error": "行程草稿格式不对，正在让模型重写…",
+    "truncated": "输出被截断，正在让模型精简重发…",
+    "budget": "正在核算门票、交通与住宿花费…",
+    "give_up": "自动重排已到上限，正在用当前最优方案收尾…",
+    "done": "行程排好了，正在整理成行程单…",
+}
+
+
+def _plan_live_line(entry: dict[str, Any]) -> str:
+    """挑一行能直接给用户看的进展；技术明细换成固定文案。"""
+    kind = str(entry.get("kind") or "")
+    if kind in _PLAN_LIVE_KINDS:
+        return str(entry.get("line") or "").strip()
+    return _PLAN_LIVE_FALLBACK.get(kind, "")
+
+
+def _plan_stage_of(entry: dict[str, Any]) -> int | None:
+    """trace 条目 -> 阶段序号；认不出就返回 None，绝不猜一个假阶段。"""
+    if entry.get("kind") in ("tool_call", "tool_result"):
+        stage = _PLAN_TOOL_STAGE.get(str(entry.get("tool") or ""))
+        if stage is not None:
+            return stage
+    return _PLAN_KIND_STAGE.get(str(entry.get("kind") or ""))
+
+
+def _plan_progress_html(done: set[int], live: str, elapsed: float) -> str:
+    """把「已完成阶段 + 最新一行真实进展 + 已耗时」画成玻璃卡。
+
+    宽度只取 len(done) / 阶段总数，不掺任何时间因子：54 秒的慢请求和 12 秒的
+    快请求走到同一阶段时长得一样，不会出现「跑满卡住」。
+    """
+    total = len(PLAN_STAGES)
+    current = next((i for i in range(total) if i not in done), total - 1)
+    pct = max(4, round(len(done) / total * 100))
+
+    rows = []
+    for index, (title, hint) in enumerate(PLAN_STAGES):
+        if index in done:
+            state, mark = "is-done", "✓"
+        elif index == current:
+            state, mark = "is-live", ""
+        else:
+            state, mark = "", ""
+        rows.append(
+            f"<li class='ci-plan-step {state}'>"
+            f"<span class='ci-plan-mark'>{mark}</span>"
+            f"<span>{escape(title)}<span class='ci-plan-sub'> · {escape(hint)}</span></span>"
+            f"</li>"
+        )
+
+    live_text = live or "已收到需求，正在准备地图与天气数据…"
+    return (
+        "<div class='ci-plan-card' role='status' aria-live='polite'>"
+        "<div class='ci-plan-top'>"
+        "<div class='ci-plan-title'><span class='ci-plan-dot'></span>正在为您规划行程</div>"
+        f"<div class='ci-plan-clock'>已用 <b id='ci-plan-elapsed'>{elapsed:.1f}</b> 秒</div>"
+        "</div>"
+        f"<div class='ci-plan-track'><span class='ci-plan-fill' style='width:{pct}%'></span></div>"
+        "<div class='ci-plan-note'><span id='ci-plan-hint'>这一步通常最花时间，请稍候…</span>"
+        "<span class='ci-plan-est'> · 进度按真实阶段推进，剩余时间无法精确预估</span></div>"
+        "<ul class='ci-plan-steps'>" + "".join(rows) + "</ul>"
+        f"<div class='ci-plan-live'><span class='ci-plan-tag'>最新</span>{escape(live_text)}</div>"
+        "</div>"
+    )
+
+
 def run_agent(request: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """执行规划：只给用户看「正在为您做什么」，不暴露任何技术细节。"""
-    entries: list[dict[str, Any]] = []
+    """执行规划，并把真实阶段实时画成进度卡。
+
+    trace_callback 在 Agent 主线程里逐条触发（预取的线程池要等结果回传后才 trace，
+    不会跨线程碰 Streamlit）：geocode / search_poi / get_weather / plan_route /
+    校验 / 预算，每条都对得上卡上的一行，进度条随之推进。两段阶段之间的空档
+    由前端秒表和轮播提示撑着，不靠匀速假进度。
+    无论成功还是失败都清掉卡片：成功让位给片头，失败让位给 _plan 的错误提示。
+    """
     payload = agent_payload(payload)
-    with status_box("💡 正在为您查阅地图、对比天气并规划最优路线，请稍候…", expanded=True) as status:
-        stage = st.empty()
-        steps: list[str] = []
+    done: set[int] = set()
+    live = ""
+    started = time.monotonic()
+    card = st.empty()
 
-        def add_step(text: str, pause: float = 0.5) -> None:
-            steps.append(text)
-            stage.markdown("\n\n".join(steps))
-            time.sleep(pause)
+    def render() -> None:
+        card.markdown(
+            _plan_progress_html(done, live, time.monotonic() - started),
+            unsafe_allow_html=True,
+        )
 
-        add_step("🗺️ 正在寻找当地值得一去的景点与特色美食…")
-        add_step("🌤️ 正在对比这几天的天气，把户外安排放到好天气…")
-        add_step("🚗 正在规避拥堵路线，让每天的路程别太赶…")
+    def on_trace(entry: dict[str, Any]) -> None:
+        nonlocal live
+        line = _plan_live_line(entry)
+        if line:
+            live = line
+        stage = _plan_stage_of(entry)
+        if stage is not None:
+            # 走到后面的阶段说明前面的也真的做完了：一起打勾，避免出现
+            # 「复核已完成、编排还在转」这种倒序观感。
+            done.update(range(stage + 1))
+        render()
 
-        try:
-            engine = agent.TravelAgent(trace_callback=lambda entry: entries.append(entry))
-            result = engine.run(request, payload)
-        except Exception:
-            status.update(label="规划没有完成", state="error", expanded=True)
-            raise
-
-        iterations = int(result.get("iterations") or 1)
-        if iterations > 1:
-            add_step("✨ 为了让行程更顺畅，正在微调时间安排…", pause=0.4)
-        status.update(label="行程已经准备好啦！", state="complete", expanded=False)
+    render()
+    _embed_plan_ticker()
+    try:
+        engine = agent.TravelAgent(trace_callback=on_trace)
+        result = engine.run(request, payload)
+    finally:
+        card.empty()
     return result
 
 
