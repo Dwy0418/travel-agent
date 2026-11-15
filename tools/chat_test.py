@@ -87,29 +87,25 @@ check(any(sb.key == "f_country" for sb in at.selectbox), "『精确设置』里�
 check(any(str(b.label) == "开始规划" for b in at.button), "『开始规划』还在，只是搬进了输入卡")
 
 btn_ct = len([b for b in at.button if str(b.key).startswith("preset_")])
-check(btn_ct == A.CARD_SLOTS == A.PAGE_SLOTS * A.PAGE_COUNT,
-      f"三页共 {A.CARD_SLOTS} 张卡（每页 {A.PAGE_SLOTS}）", str(btn_ct))
-heads = re.findall(r"<div class='pc-page' id='pc-page-(\d+)'>", texts(at))
-check(heads == [str(i) for i in range(1, A.PAGE_COUNT + 1)], "每页一个吸附点，id 连着编号", str(heads))
-pills = re.findall(r"<a class='pc-pg pc-pg-\d+' href='#pc-page-(\d)'>", texts(at))
-check(pills == heads, "分页器胶囊和页首一一对应", str(pills))
-navs = re.findall(r"<a class='pc-nav' href='#pc-page-(\d)'>([^<]+)</a>", texts(at))
-check(navs == [("2", "下一页 →"), ("1", "← 上一页"), ("3", "下一页 →"), ("2", "← 上一页")],
-      "页内上一页/下一页只给得出得去的方向", str(navs))
+check(btn_ct == A.PAGE_SLOTS,
+      f"首屏只渲染 {A.PAGE_SLOTS} 张卡（另外两页不进 DOM）", str(btn_ct))
+heads = re.findall(r"<div class='pc-page'><span class='pc-page-no'>第 (\d+) / (\d+) 页</span>", texts(at))
+check(heads == [("1", str(A.PAGE_COUNT))], "页首只留一个页码行：当前页 / 总页数", str(heads))
+check(not re.search(r"pc-pager|pc-pg-|pc-page-nav", "".join(texts(at))),
+      "圆形数字分页器（pc-pager 胶囊）已删除")
+check(any(str(b.key) == "pc_prev" for b in at.button) and any(str(b.key) == "pc_next" for b in at.button),
+      "右上角保留上一页 / 下一页按钮")
 check(A._card_face(A.CITY_CARDS["北京市"][0], 8, 0).count("animation-delay:0ms") == 1,
       "错落延迟按页内算：第二页第一张不排队")
 
-# 整页吸附：只认 Streamlit 真正在滚的那个容器，且只在首屏（有 .pc-page 时）生效
+# 分页改成服务端状态（_card_page）：每轮只渲染当前页，整页吸附随之退场
 snap_src = (ROOT / "app.py").read_text(encoding="utf-8")
-check('main[data-testid="stMain"]:has(.pc-page)' in snap_src, "吸附挂在 stMain 上，出行程后不受影响")
-for needle in ("scroll-snap-type: y mandatory", "scroll-behavior: smooth",
-               "scroll-snap-stop: always", "scroll-padding-block-end: 208px"):
-    check(needle in snap_src, f"翻页样式里有 {needle}")
-check(re.search(r"@media \(max-width: 1023px\)[\s\S]{0,140}scroll-snap-type: y proximity", snap_src),
-      "窄屏一页放不下，退成 proximity 而不是锁死页中内容")
+check("scroll-snap-type" not in snap_src, "整页吸附已摘掉，不再靠 snap 顶到页首")
+check('st.session_state["_card_page"]' in snap_src, "翻页状态落在 session_state 上")
+check("scrollTo({ top: 0" in snap_src, "翻页后把主滚动容器拉回页首")
 grid_rules = "\n".join(re.findall(r":has\(\.pc-face\)[^{]*\{[^}]*\}", snap_src))
 check("repeat(6" not in grid_rules, "卡片网格列数只剩 8 的因数（1/2/4），末行不缺格")
-check("content-visibility: auto" in grid_rules, "页外网格标了 content-visibility（省排版，取图仍要靠自己压尺寸）")
+check("content-visibility" not in snap_src, "页外网格的 content-visibility 随三页同屏一起退场")
 check(".rec-head" not in snap_src and ".pc-page-scope {" in snap_src,
       "旧的一屏标题样式摘干净了，范围提示改由每页页首接手")
 

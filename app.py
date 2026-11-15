@@ -22,8 +22,11 @@ from typing import Any
 from urllib.parse import quote
 
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 from travel_agent import agent, config, llm, zh_labels
+
+from components.map_intro import map_intro
 
 st.set_page_config(page_title=zh_labels.PAGE_TITLE, page_icon="🧭", layout="wide")
 
@@ -621,8 +624,8 @@ CITY_PRIORITY = [
     "西安市", "厦门市", "大理市", "梅州市", "甘孜州",
 ]
 
-# 一页 8 张：桌面 4 列正好两行，整页高度落在「视口 - 吸底输入卡」里，
-# scroll-snap 才敢用 mandatory；页数写死 3，凑不满一页时后面的页自动少几张。
+# 一页 8 张：桌面 4 列正好两行，整页高度落在「视口 - 吸底输入卡」里。
+# 翻页由服务端状态控制，一次只渲染当前页这 8 张；页数写死 3，凑不满一页时末页自动少几张。
 PAGE_SLOTS = 8
 PAGE_COUNT = 3
 CARD_SLOTS = PAGE_SLOTS * PAGE_COUNT
@@ -1065,9 +1068,10 @@ div[data-testid="stDecoration"] { display: none !important; }
 div[data-testid="stToolbar"] { right: 1rem; }
 section.main > div.block-container,
 div[data-testid="stAppViewContainer"] .block-container {
-    /* stHeader 高 60px 且压在内容之上：2.4rem(38px) 会让主标题顶进去 7px，
-       Cloud 上还会和 Share/编辑 那一排图标打架。留到 72px 起，同时不回到原来 6rem 的松散感。 */
-    padding-top: clamp(72px, 8vh, 104px);
+    /* stHeader 高 60px 且透明悬浮在内容之上，工具栏那一排还会再占十几像素：
+       72px 起在矮窗口里刚好把「旅游规划助手」顶上沿咬掉。抬到 96px 起，
+       主滚动容器的首屏留白就稳定大于悬浮头的下沿。 */
+    padding-top: clamp(96px, 9vh, 120px);
     padding-bottom: 3rem;
     /* 原本写死 1320px：收起侧栏腾出的宽度被封顶吃掉，全变成居中的左右留白 */
     max-width: min(100% - clamp(24px, 4vw, 72px), 1760px);
@@ -1842,16 +1846,11 @@ div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] >
     box-shadow: 0 22px 44px rgba(2, 6, 23, 0.68);
 }
 
-/* 照片那一格：定高 240 在 5-6 列时会被压成一条，改成按比例给高 */
+/* 照片那一格：高度统一由 --pc-face-h 控制（见下方 :root），
+   保证 2 行 × 4 列的 8 张卡在 1440×900 下整卡落在输入卡上方。 */
 div[data-testid="stElementContainer"]:has(.pc-face) {
     position: relative;
-    height: auto;
-    aspect-ratio: 4 / 3;
-}
-@media (min-width: 1500px) {
-    div[data-testid="stElementContainer"]:has(.pc-face) {
-        aspect-ratio: 16 / 9;
-    }
+    height: var(--pc-face-h, 160px);
 }
 @keyframes cardRiseIn {
     from { opacity: 0; transform: translateY(10px); }
@@ -1968,7 +1967,7 @@ div[data-testid="stElementContainer"]:has(.pc-face) + div[data-testid="stElement
     left: 0;
     right: 0;
     width: 100%;
-    height: 240px;
+    height: var(--pc-face-h, 160px);
     z-index: 3;
 }
 div[data-testid="stElementContainer"]:has(.pc-face) + div [data-testid="stButton"] {
@@ -2119,6 +2118,12 @@ section[data-testid="stSidebar"][data-collapsed="true"] [data-testid="stSidebarU
 div[data-testid="stElementContainer"]:has(> div[data-testid="stMarkdown"] div > style:only-child) {
     display: none;
 }
+/* 卡片封面的高度：一屏 8 张（2 行 × 4 列）必须整卡落在吸底输入卡上方。
+   实测 1440×900：卡片区从 250 开始，每张卡除封面外还有 69px 操作条 + 14px 行距，
+   空态输入卡上沿在 718。要让第二行「一键生成」按钮底边（= 388 + 2×封面高）
+   停在 718 之上，封面高只能取到 158px 左右。写成 50vh - 292px 是让更高的窗口
+   按同样比例长大，矮窗口保底 158px，不把卡片压成一条。 */
+:root { --pc-face-h: clamp(158px, calc(50vh - 292px), 280px); }
 /* 卡片网格：列数随主区宽度增长（1 → 2 → 3 → 4 → 6）。
    这里用断点而不是 auto-fit，是因为 12 张卡只有被 12 整除的列数才不会出现
    最后一排缺格的空洞：2/3/4/6 都能整除，5 列就会留下 3 个空格。 */
@@ -2158,81 +2163,46 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
     }
 }
 
-/* 整页翻动：Streamlit 里真正在滚的是 main[data-testid="stMain"]，吸附只挂在首屏上
-   （:has(.pc-page)），出行程之后的长文不能被拽回页首。
-   scroll-snap-stop: always 是「滚轮一次别划过两三页」的正解——浏览器每次手势只准停在一个
-   吸附点上，不需要写 JS 做防抖；st.markdown 会吃掉 <script>，这里也写不了。 */
-main[data-testid="stMain"]:has(.pc-page) {
-    scroll-snap-type: y mandatory;
-    scroll-behavior: smooth;
-    scroll-padding-block-end: 208px;   /* 让开吸底输入卡，最后一排卡片能整行露出来 */
-}
-/* 窄屏 2 列要排 4 行，一页比一屏高，mandatory 会把页中内容锁死，退成靠近吸附 */
-@media (max-width: 1023px) {
-    main[data-testid="stMain"]:has(.pc-page) {
-        scroll-snap-type: y proximity;
-    }
-}
-/* hero 也算一个吸附点，否则首屏一滚就被拉到第一页页首，标题永远看不见 */
-.hero,
-.pc-page {
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
-}
-/* 页外的卡片网格跳过布局（实测 Chrome 仍会把三页都渲染出来，取图靠 _cover_url 压尺寸） */
-div[data-testid="stHorizontalBlock"]:has(.pc-face) {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 520px;
-}
+/* 翻页已改成服务端严格分页：整页只渲染当前页的 8 张卡，页面里不存在「下一页」
+   的卡片，也就不再需要 scroll-snap 把整页顶到吸附点上。
+   原来的 mandatory 吸附在矮窗口里还会把第二排卡锁住，一并去掉。 */
 .pc-page {
     display: flex;
     align-items: baseline;
     gap: 10px;
-    margin: 0 0 10px;
+    margin: 0;
     font-size: 13px;
     font-weight: 700;
     color: #8FA6C6;
 }
 .pc-page-no { color: #E2ECFA; }
-.pc-page-nav { margin-left: auto; display: flex; gap: 8px; }
-.pc-nav {
-    padding: 3px 12px;
-    border-radius: 999px;
-    border: 1px solid rgba(148, 190, 240, .35);
-    background: rgba(9, 20, 36, .55);
-    color: #BFDBFE;
-    font-size: 12.5px;
-    text-decoration: none;
-    transition: background .18s ease, color .18s ease;
+/* 上一页 / 下一页：右上角唯一的分页入口（圆形数字分页器已删除）。
+   容器 key 会落在 st-key-pc_prev / st-key-pc_next 上，按 key 精确改样式，
+   不会波及其它 st.button。 */
+.st-key-pc_prev button,
+.st-key-pc_next button {
+    min-height: 32px !important;
+    padding: 0.1rem 0.78rem !important;
+    border-radius: 999px !important;
+    border: 1px solid rgba(148, 190, 240, .35) !important;
+    background: rgba(9, 20, 36, .55) !important;
+    color: #BFDBFE !important;
+    font-size: 12.5px !important;
+    font-weight: 700 !important;
+    box-shadow: none !important;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
 }
-.pc-nav:hover { background: rgba(59, 130, 246, .30); color: #FFFFFF; }
-/* 分页器钉在输入卡上方；胶囊是锚点，点谁 URL hash 就指到谁的页首 */
-.pc-pager {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 198px;
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    z-index: 29;
-    pointer-events: none;
+.st-key-pc_prev button:hover,
+.st-key-pc_next button:hover {
+    background: rgba(59, 130, 246, .30) !important;
+    border-color: rgba(148, 190, 240, .60) !important;
+    color: #FFFFFF !important;
 }
-.pc-pager a {
-    pointer-events: auto;
-    width: 30px;
-    height: 30px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    border: 1px solid rgba(148, 190, 240, .38);
-    background: rgba(9, 20, 36, .66);
-    color: #DCE9FA;
-    font-size: 13px;
-    font-weight: 800;
-    text-decoration: none;
-    backdrop-filter: blur(6px);
+.st-key-pc_prev button:disabled,
+.st-key-pc_next button:disabled {
+    opacity: .35 !important;
+    background: rgba(9, 20, 36, .30) !important;
+    color: #BFDBFE !important;
 }
 
 /* 吸底输入卡：st.container(key="composer") 会带上官方保证的 st-key-composer 类名。
@@ -2246,12 +2216,162 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) {
     max-width: 1180px;
     margin-inline: auto;
     padding: 11px clamp(12px, 1.5vw, 20px) 13px clamp(12px, 1.5vw, 20px);
-    background: rgba(9, 14, 26, 0.82);
-    backdrop-filter: blur(20px) saturate(150%);
-    -webkit-backdrop-filter: blur(20px) saturate(150%);
-    border: 1px solid rgba(148, 163, 184, 0.20);
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 18px;
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
+}
+/* 输入卡里的控件自己还铺着一层实色（主题给的），会把毛玻璃糊回一块板：
+   输入框与内层容器全部让路，只留一条细边标出可输入区域。 */
+.st-key-composer [data-testid="stChatInput"],
+.st-key-composer [data-testid="stChatInput"] > div,
+.st-key-composer div[data-baseweb="textarea"],
+.st-key-composer div[data-baseweb="base-input"],
+.st-key-composer div[data-baseweb="input"] {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+.st-key-composer [data-testid="stChatInput"] {
+    border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.st-key-composer [data-testid="stChatInput"] textarea {
+    background: transparent !important;
+    color: #F1F5F9 !important;
+}
+/* 「精确设置」弹层也是玻璃：Streamlit 主题把 popover body 的底色写死，
+   这里必须 !important 才盖得住。只作用在弹层本体，不给主内容区铺底，
+   否则整页会发灰。 */
+div[data-baseweb="popover"] div[data-testid="stPopoverBody"],
+div[data-testid="stPopoverBody"] {
+    background: rgba(15, 23, 42, 0.65) !important;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 24px 60px rgba(2, 6, 23, 0.55) !important;
+}
+/* 弹层里的下拉 / 日期 / 数字控件：主题给的是浅色实底（stSelectbox 的 react-aria
+   分组、stDateInputField 都是 #F4F6F8），压在玻璃面板上像贴了三块白胶带。
+   统一改成深色半透明 + 细边，文字与图标提亮，和面板保持同一套材质。
+   注意：1.66 的下拉不再带 data-baseweb="select"，控件本体是 [role="group"]，
+   所以两套选择器都要留着（老版本走 baseweb 分支）。 */
+div[data-testid="stPopoverBody"] {
+    color: #CBD5E1 !important;
+}
+div[data-testid="stPopoverBody"] div[data-testid="stDateInputField"],
+div[data-testid="stPopoverBody"] div[data-testid="stSelectbox"] div[role="group"],
+div[data-testid="stPopoverBody"] div[data-testid="stTextInput"] div[role="group"],
+div[data-testid="stPopoverBody"] div[data-testid="stTextArea"] div[role="group"],
+div[data-testid="stPopoverBody"] div[data-baseweb="select"] > div,
+div[data-testid="stPopoverBody"] div[data-baseweb="input"],
+div[data-testid="stPopoverBody"] div[data-baseweb="base-input"],
+div[data-testid="stPopoverBody"] div[data-testid="stNumberInputContainer"],
+div[data-testid="stPopoverBody"] div[data-testid="stDateInput"] > div,
+div[data-testid="stPopoverBody"] div[data-testid="stTextInput"] > div,
+div[data-testid="stPopoverBody"] div[data-testid="stTextArea"] > div {
+    background: rgba(9, 16, 28, 0.72) !important;
+    border: 1px solid rgba(148, 163, 184, 0.28) !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+}
+div[data-testid="stPopoverBody"] div[data-testid="stDateInputField"]:hover,
+div[data-testid="stPopoverBody"] div[data-testid="stSelectbox"] div[role="group"]:hover,
+div[data-testid="stPopoverBody"] div[data-baseweb="select"] > div:hover,
+div[data-testid="stPopoverBody"] div[data-baseweb="input"]:hover {
+    background: rgba(15, 26, 44, 0.82) !important;
+    border-color: rgba(148, 190, 240, 0.42) !important;
+}
+div[data-testid="stPopoverBody"] div[data-testid="stDateInputField"]:focus-within,
+div[data-testid="stPopoverBody"] div[data-testid="stSelectbox"] div[role="group"]:focus-within,
+div[data-testid="stPopoverBody"] div[data-baseweb="select"] > div:focus-within,
+div[data-testid="stPopoverBody"] div[data-baseweb="input"]:focus-within {
+    border-color: rgba(59, 130, 246, 0.85) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18) !important;
+}
+/* 弹层被 portal 到 body 下，拿不到 .stApp 的深色文字，输入框会继承 #1B1F24 */
+div[data-testid="stPopoverBody"] input,
+div[data-testid="stPopoverBody"] textarea {
+    color: #E8EEF7 !important;
+    -webkit-text-fill-color: #E8EEF7 !important;
+    background: transparent !important;
+    caret-color: #93C5FD;
+}
+/* 日期不是 input：react-aria 把年月日拆成 contenteditable 的 span[role=spinbutton]，
+   继承的是 portal 外面的 #1B1F24，深底上完全看不见 */
+div[data-testid="stPopoverBody"] [data-testid="stDateInputFieldsScroller"] span,
+div[data-testid="stPopoverBody"] [role="spinbutton"] {
+    color: #E8EEF7 !important;
+    -webkit-text-fill-color: #E8EEF7 !important;
+    opacity: 1 !important;
+}
+div[data-testid="stPopoverBody"] div[data-baseweb="select"] svg,
+div[data-testid="stPopoverBody"] div[data-testid="stDateInput"] svg,
+div[data-testid="stPopoverBody"] div[data-testid="stSelectbox"] svg {
+    fill: #9FB2CC !important;
+    color: #9FB2CC !important;
+}
+/* 展开后的下拉菜单是 react-aria 的虚拟列表，容器 stSelectboxVirtualDropdown
+   默认是纯白 #FFF，字号又是深色；不压的话点开就是一块白板 */
+div[data-testid="stSelectboxVirtualDropdown"] {
+    background: #0E1726 !important;
+    border: 1px solid rgba(148, 163, 184, 0.28) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 20px 50px rgba(2, 6, 23, 0.6) !important;
+}
+div[data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+div[data-testid="stSelectboxVirtualDropdown"] [role="option"] {
+    background: transparent !important;
+    color: #E2E8F0 !important;
+}
+div[data-testid="stSelectboxVirtualDropdown"] [role="option"]:hover,
+div[data-testid="stSelectboxVirtualDropdown"] [role="option"][aria-selected="true"] {
+    background: rgba(59, 130, 246, 0.22) !important;
+}
+/* 日期选择器展开的日历：stDateInputCalendar 也是纯白底 + 深色字 */
+div[data-testid="stDateInputCalendar"] {
+    background: #0E1726 !important;
+    color: #E2E8F0 !important;
+    border: 1px solid rgba(148, 163, 184, 0.28) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 20px 50px rgba(2, 6, 23, 0.6) !important;
+}
+div[data-testid="stDateInputCalendar"] [role="grid"],
+div[data-testid="stDateInputCalendar"] [role="gridcell"],
+div[data-testid="stDateInputCalendar"] [role="button"],
+div[data-testid="stDateInputCalendar"] button {
+    background: transparent !important;
+    color: #E2E8F0 !important;
+}
+div[data-testid="stDateInputCalendar"] [role="gridcell"]:hover,
+div[data-testid="stDateInputCalendar"] [role="button"]:hover,
+div[data-testid="stDateInputCalendar"] button:hover {
+    background: rgba(59, 130, 246, 0.22) !important;
+}
+div[data-testid="stDateInputCalendar"] [aria-selected="true"] {
+    background: rgba(59, 130, 246, 0.5) !important;
+    color: #FFFFFF !important;
+}
+/* 弹层里“?”的说明气泡同样是白底，会突兀地亮一下 */
+div[data-testid="stTooltipContent"] {
+    background: #0E1726 !important;
+    color: #E2E8F0 !important;
+    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    box-shadow: 0 16px 40px rgba(2, 6, 23, 0.6) !important;
+}
+/* 展开后的下拉菜单 / 日历也是 baseweb popover，默认跟着主题走浅色；单独压成深色 */
+div[data-baseweb="popover"] ul[role="listbox"],
+div[data-baseweb="popover"] div[role="listbox"],
+div[data-baseweb="popover"] div[data-baseweb="calendar"],
+div[data-baseweb="popover"] div[data-baseweb="calendar"] > div {
+    background: #0E1726 !important;
+    color: #E2E8F0 !important;
+}
+div[data-baseweb="popover"] ul[role="listbox"] li:hover,
+div[data-baseweb="popover"] div[role="option"]:hover,
+div[data-baseweb="popover"] div[data-baseweb="calendar"] div[role="button"]:hover {
+    background: rgba(59, 130, 246, 0.22) !important;
 }
 /* 卡片上方再铺一层由透明到深色的渐变：滚动时内容是被「雾」收掉的，
    而不是被一块硬边板子截断。pointer-events 关掉，不影响点卡片。 */
@@ -2281,12 +2401,18 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) {
     border-radius: 12px;
     margin-bottom: 8px;
 }
-/* 主区底部让出输入卡的高度，最后一排卡片不会被盖住 */
+/* 主区底部让出输入卡的高度，最后一排卡片不会被盖住。
+   输入卡高度不是固定的：带聊天记录时（对话回看 172px）会涨到约 300px，
+   写死 224px 会把长表格的最后一段压在卡片底下。--ci-composer-h 由
+   _embed_layout_sync() 里的 ResizeObserver 实时写到 <html> 上，
+   拿不到时退回 224px（空态实测 168px + 56px 余量）。 */
 div[data-testid="stMainBlockContainer"] {
-    padding-bottom: 224px !important;
+    padding-bottom: calc(var(--ci-composer-h, 224px) + 16px) !important;
 }
 @media (max-width: 560px) {
-    div[data-testid="stMainBlockContainer"] { padding-bottom: 264px !important; }
+    div[data-testid="stMainBlockContainer"] {
+        padding-bottom: calc(var(--ci-composer-h, 264px) + 16px) !important;
+    }
 }
 
 /* 详情弹窗：图集两列、视频 16:9，宽屏时并排 */
@@ -2907,74 +3033,149 @@ def apply_pending_preset() -> None:
     _chat_log().append({"role": "assistant", "content": f"已套用「{preset['title']}」，条件都填好了。"})
 
 
+def _scroll_top_html() -> str:
+    """翻页后把主滚动容器拉回页首。
+
+    st.markdown 会吃掉 <script>，只能走 components.v1.html 的 iframe；
+    Streamlit 里真正在滚的是 main[data-testid="stMain"]，父页面同源可以直接操作。
+    重排要一两帧，补两次延时兜底；跨域被拦时静默失败，不影响翻页本身。
+    """
+    return """
+<script>
+(function () {
+  var p = window.parent;
+  function jump() {
+    try {
+      var main = p.document.querySelector('main[data-testid="stMain"]');
+      if (main) { main.scrollTo({ top: 0, behavior: 'smooth' }); }
+      p.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) {}
+  }
+  jump();
+  requestAnimationFrame(jump);
+  setTimeout(jump, 140);
+  setTimeout(jump, 360);
+})();
+</script>
+"""
+
+
+def _embed_scroll_top() -> None:
+    """把回顶脚本塞进页面：st.iframe 允许脚本执行且与主页面同源；
+    老版本没有 st.iframe，退回 components.v1.html（同一份 HTML）。"""
+    html = "<html><body style='margin:0'>" + _scroll_top_html() + "</body></html>"
+    frame = getattr(st, "iframe", None)
+    if callable(frame):
+        try:
+            frame(html, height=1)
+            return
+        except TypeError:
+            pass
+    st_components.html(html, height=0)
+
+
+def _layout_sync_html() -> str:
+    """把吸底输入卡的实时高度写到父页面 <html> 的 --ci-composer-h 上。
+
+    主区 padding-bottom 靠这个变量跟着输入卡走：空态约 168px，带聊天记录时
+    对话回看会长到约 300px。ResizeObserver 盯住高度变化，窗口缩放和
+    聊天记录增删都能立刻反映到留白，不用等下一次 rerun。
+    """
+    return """
+<script>
+(function () {
+  var p = window.parent;
+  var doc, comp;
+  try { doc = p.document; comp = doc.querySelector('.st-key-composer'); } catch (e) { return; }
+  if (!comp) return;
+  function apply() {
+    var h = Math.round(comp.getBoundingClientRect().height);
+    if (h > 0) doc.documentElement.style.setProperty('--ci-composer-h', h + 'px');
+  }
+  apply();
+  try {
+    if (p.ResizeObserver) new p.ResizeObserver(apply).observe(comp);
+  } catch (e) {}
+  [80, 260, 700, 1400].forEach(function (ms) { setTimeout(apply, ms); });
+  p.addEventListener('resize', apply);
+})();
+</script>
+"""
+
+
+def _embed_layout_sync() -> None:
+    """在每个渲染轮末尾挂一次高度同步脚本（1px iframe，不占版面）。"""
+    html = "<html><body style='margin:0'>" + _layout_sync_html() + "</body></html>"
+    frame = getattr(st, "iframe", None)
+    if callable(frame):
+        try:
+            frame(html, height=1)
+            return
+        except TypeError:
+            pass
+    st_components.html(html, height=0)
+
+
 def render_empty_state() -> None:
-    """首屏视觉中心：Agent 身份 + 按页排布的推荐卡片，一页一屏、滚动吸附翻页。"""
+    """首屏视觉中心：Agent 身份 + 按页排布的推荐卡片。
+
+    一页严格 8 张：翻页是服务端状态（_card_page），这一轮只渲染当前页的卡片，
+    DOM 里不存在「下一页」的 8 张，底部也就不会冒出第三行。
+    分页入口只有右上角的上一页 / 下一页，点完平滑回页首。
+    """
     cards, scope = pick_recommendations()
-    pages = [cards[i:i + PAGE_SLOTS] for i in range(0, len(cards), PAGE_SLOTS)]
+    total = max(1, math.ceil(len(cards) / PAGE_SLOTS))
+    page = max(1, min(int(st.session_state.get("_card_page") or 1), total))
+    st.session_state["_card_page"] = page
+    page_cards = cards[(page - 1) * PAGE_SLOTS: page * PAGE_SLOTS]
 
     st.markdown(
         "<div class='hero'>"
         "<div class='hero-title'>✈️ 旅游规划助手</div>"
         "<div class='hero-sub'>挑一张卡片直接出行程，或在最下方一句话告诉管家。</div>"
-        # 只预加载第一页的封面：首屏只等 8 张，后两页晚一点到也不挡着看第 1 页
-        "</div>" + _cover_preload_html(pages[0]),
+        # 只预加载当前页的封面：另外两页不在 DOM 里，提前下载纯属浪费带宽
+        "</div>" + _cover_preload_html(page_cards),
         unsafe_allow_html=True,
     )
-    st.markdown(_pager_html(len(pages)), unsafe_allow_html=True)
-    st.markdown(_card_photo_css(cards) + _paging_css(len(pages)), unsafe_allow_html=True)
+    # 照片规则按全局序号生成，翻页后 .pc-face-N 才对得上各自的图
+    st.markdown(_card_photo_css(cards), unsafe_allow_html=True)
 
-    for pno, page in enumerate(pages):
-        st.markdown(_page_head_html(pno, len(pages), scope), unsafe_allow_html=True)
-        cols = st.columns(len(page), gap="medium")
-        for slot, (col, preset) in enumerate(zip(cols, page)):
-            with col:
-                with card():
-                    # 浮层序号是全局的（对应 _card_photo_css 的规则），飘上来的延迟按页内算
-                    st.markdown(_card_face(preset, pno * PAGE_SLOTS + slot, slot), unsafe_allow_html=True)
-                    # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
-                    if st.button("看详情", key=f"detail_{preset['key']}"):
-                        st.session_state["_open_detail"] = preset["key"]
-                        st.rerun()
-                    if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
-                        # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
-                        st.session_state["_pending_preset"] = preset
-                        st.session_state["_run_preset"] = True
-                        st.rerun()
+    head_left, head_prev, head_next = st.columns([9, 1.4, 1.4], vertical_alignment="center")
+    with head_left:
+        st.markdown(
+            f"<div class='pc-page'><span class='pc-page-no'>第 {page} / {total} 页</span>"
+            f"<span class='pc-page-scope'>{escape(scope)}</span></div>",
+            unsafe_allow_html=True,
+        )
+    with head_prev:
+        if st.button("← 上一页", key="pc_prev", disabled=page <= 1, width="stretch"):
+            st.session_state["_card_page"] = page - 1
+            st.session_state["_scroll_top"] = True
+            st.rerun()
+    with head_next:
+        if st.button("下一页 →", key="pc_next", disabled=page >= total, width="stretch"):
+            st.session_state["_card_page"] = page + 1
+            st.session_state["_scroll_top"] = True
+            st.rerun()
 
+    cols = st.columns(len(page_cards), gap="medium")
+    for slot, (col, preset) in enumerate(zip(cols, page_cards)):
+        with col:
+            with card():
+                # 浮层序号是全局的（对应 _card_photo_css 的规则），飘上来的延迟按页内算
+                st.markdown(_card_face(preset, (page - 1) * PAGE_SLOTS + slot, slot), unsafe_allow_html=True)
+                # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
+                if st.button("看详情", key=f"detail_{preset['key']}"):
+                    st.session_state["_open_detail"] = preset["key"]
+                    st.rerun()
+                if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
+                    # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
+                    st.session_state["_pending_preset"] = preset
+                    st.session_state["_run_preset"] = True
+                    st.rerun()
 
-def _pager_html(total: int) -> str:
-    """吸底分页器：锚点胶囊，点了就把 URL hash 写成 #pc-page-N，高亮跟着走。"""
-    pills = "".join(f"<a class='pc-pg pc-pg-{i}' href='#pc-page-{i}'>{i}</a>" for i in range(1, total + 1))
-    return f"<div class='pc-pager'>{pills}</div>"
-
-
-def _page_head_html(pno: int, total: int, scope: str) -> str:
-    """每页顶部的吸附点：页码 + 上一页 / 下一页，锚点跳转靠 scroll-behavior 平滑滚动。"""
-    no = pno + 1
-    nav = ""
-    if no > 1:
-        nav += f"<a class='pc-nav' href='#pc-page-{no - 1}'>← 上一页</a>"
-    if no < total:
-        nav += f"<a class='pc-nav' href='#pc-page-{no + 1}'>下一页 →</a>"
-    return (
-        f"<div class='pc-page' id='pc-page-{no}'>"
-        f"<span class='pc-page-no'>第 {no} / {total} 页</span>"
-        f"<span class='pc-page-scope'>{escape(scope)}</span>"
-        f"<span class='pc-page-nav'>{nav}</span>"
-        "</div>"
-    )
-
-
-def _paging_css(total: int) -> str:
-    """分页器高亮跟着锚点走：第 N 页被命中就点亮第 N 个胶囊，没命中时算第 1 页。"""
-    active = "background: linear-gradient(96deg, #3B82F6, #8B5CF6); color: #FFFFFF; border-color: transparent;"
-    hit = ", ".join(f"body:has(#pc-page-{i}:target) .pc-pg-{i}" for i in range(1, total + 1))
-    return (
-        "<style>"
-        f"{hit} {{ {active} }}"
-        f"body:not(:has(.pc-page:target)) .pc-pg-1 {{ {active} }}"
-        "</style>"
-    )
+    if st.session_state.pop("_scroll_top", False):
+        _embed_scroll_top()
 
 
 def _card_face(preset: dict[str, Any], slot: int, delay: int | None = None) -> str:
@@ -3307,13 +3508,10 @@ def _render_detail(preset: dict[str, Any]) -> None:
         seed_state("f_origin", ORIGIN_DEFAULT)
         st.selectbox("出发地", ORIGIN_CITIES, key="f_origin")
     origin = str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
-    intro = _intro_html(preset, origin)
-    # 每张卡 + 每个出发地只播一次：换卡、换出发地都会重播，其他任何重跑都不再挡正文。
-    intro_tag = f"{preset['key']}|{origin}"
-    if intro and st.session_state.get("_intro_seen") != intro_tag:
-        st.markdown(intro, unsafe_allow_html=True)
-        st.session_state["_intro_seen"] = intro_tag
-        full_width_button("跳过片头 ▸", key="intro_skip")
+    # 原来这里是一段手绘 2D 矢量片头（_intro_html），现已由电影级 3D 开场取代。
+    # 3D 片头只在「开始规划」跑完后播一次（见 _play_intro / _intro_pending），
+    # 浏览详情页、换出发地都不会再触发，符合“只在开始规划时播放”的要求。
+    _ = origin
 
     left, right = st.columns([1.55, 1], gap="large")
 
@@ -4869,11 +5067,93 @@ def _plan(request: str, payload: dict[str, Any]) -> None:
         st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
         return
     try:
-        st.session_state["result"] = run_agent(request, payload)
+        result = run_agent(request, payload)
+        st.session_state["result"] = result
+        # 只有「真的跑完一次规划」才放行片头；浏览详情页、换筛选条件都不会碰这个标记。
+        # 规划失败（没产出可展示的行程）时不放片头：否则会先播一段开场，再落进空详情页。
+        if (result.get("itinerary") or {}).get("days"):
+            st.session_state["_intro_pending"] = True
     except agent.AgentError as exc:
         st.error(f"这次没能规划成功：{zh_labels.friendly_error(exc)}")
     except Exception:  # noqa: BLE001 - 界面层兜底，避免白屏
         st.error("出了点小状况，请稍后再试一次。")
+
+
+def _intro_pois(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 itinerary.days 里的「游玩」条目拍平成片头要的 POI 列表。
+
+    只取 attraction（吃饭/住宿不进开场地图）；坐标沿用高德 GCJ-02，
+    组件侧按 config.coordShift 统一纠偏；停留时长在这里折算成分钟。
+    返回空列表时组件会退回内置的成都示例点位，片头照常播完。
+    """
+    pois: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for day in (result.get("itinerary") or {}).get("days") or []:
+        for item in day.get("items") or []:
+            if item.get("type") != "attraction":
+                continue
+            name = str(item.get("name") or "").strip()
+            lng, lat = item.get("lng"), item.get("lat")
+            if not name or name in seen:
+                continue
+            if not isinstance(lng, (int, float)) or not isinstance(lat, (int, float)):
+                continue
+            if not (73 <= float(lng) <= 136 and 3 <= float(lat) <= 54):
+                continue
+            start = _hhmm_to_min(item.get("start"))
+            end = _hhmm_to_min(item.get("end"))
+            seen.add(name)
+            pois.append(
+                {
+                    "name": name,
+                    "lng": round(float(lng), 6),
+                    "lat": round(float(lat), 6),
+                    "day": int(day.get("day") or 0),
+                    "start": str(item.get("start") or ""),
+                    "end": str(item.get("end") or ""),
+                    "stay": max(0, end - start) if start is not None and end is not None else 0,
+                    "note": str(item.get("note") or ""),
+                    "cost": item.get("cost") or 0,
+                    "img": str(item.get("pic") or item.get("photo") or ""),
+                }
+            )
+    return pois[:8]
+
+def _play_intro(result: dict[str, Any]) -> dict[str, Any] | None:
+    """全屏电影级开场。
+
+    组件在「播完」或用户点「跳过片头」时回传 componentValue，Streamlit 因此 rerun 一次；
+    这一轮 _intro_pending 已经是 False，脚本继续往下走 show_result()，即进入行程详情。
+    首帧返回 None，所以本轮直接 st.stop()，让片头独占一屏。
+    """
+    c = result.get("constraints") or {}
+    # 片头这一轮只渲染 iframe，顺手把主区留白收掉，避免上下各留一条黑边
+    st.markdown(
+        """
+        <style>
+          .block-container { padding-top: 0.6rem !important; padding-bottom: 0 !important; max-width: 100% !important; }
+          iframe[title*="map_intro"] { width: 100% !important; border: 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    previous = st.session_state.get("_intro_result")
+    # 真实行程 -> 片头点位：没有可用的景点（规划失败 / 缺高德 Key）时传空列表，
+    # 组件会立刻退回内置示例，不会白屏。
+    pois = _intro_pois(result)
+    event = map_intro(
+        key="plan_intro",
+        payload={
+            "origin": str(st.session_state.get("f_origin") or ORIGIN_DEFAULT),
+            "city": str(c.get("city") or ""),
+            "days": int(c.get("days") or 0),
+            "people": int(c.get("people") or 0),
+            "pois": pois,
+        },
+    )
+    if event and event != previous:
+        st.session_state["_intro_result"] = event
+    return event
 
 
 def main() -> None:
@@ -4912,11 +5192,17 @@ def main() -> None:
     if not result:
         render_empty_state()
     else:
+        if st.session_state.pop("_intro_pending", False):
+            # 片头独占一屏：先播，回传后再 rerun 走到下面的 show_result
+            _play_intro(result)
+            st.stop()
         show_result(result)
 
     # 输入卡放在最后：主区里的 chat_input 由 Streamlit 钉在视口底部，
     # 点击与提交都只写标记 + rerun，规划在下一轮顶部执行一次。
     render_composer()
+    # 输入卡高度会随聊天记录变化，主区底部留白跟着它走
+    _embed_layout_sync()
 
     # 详情弹窗最后打开：它压在整页之上，前面该回填的条件这轮都已经落好。
     render_open_detail()
