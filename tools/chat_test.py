@@ -270,6 +270,85 @@ try:
 finally:
     A.st.dialog = _real_dialog
 
+def markdown_hits(at: AppTest, needle: str, act: Any) -> int:
+    """数「这一次运行里 app 真正发出了几条含 needle 的 markdown」。
+
+    AppTest 会把弹窗元素留在元素树里，事后翻 at.markdown 判断不了某轮到底渲染了什么。
+    st 是和 app 共享的模块对象，包一层就能拿到实时调用记录。
+    """
+    counter = [0]
+    real = A.st.markdown
+
+    def spy(text: Any, **kw: Any) -> Any:
+        if needle in str(text):
+            counter[0] += 1
+        return real(text, **kw)
+
+    A.st.markdown = spy
+    try:
+        act()
+    finally:
+        A.st.markdown = real
+    assert not at.exception, f"操作抛异常：{at.exception}"
+    return counter[0]
+
+
+# ---------------------------------------------------------------------------
+# 3c. 启程片头：航线描出 + 推镜放大 + 封面收场，必须可跳过、只播一次
+# ---------------------------------------------------------------------------
+no_xy = [str(c["payload"].get("city")) for cards in A.CITY_CARDS.values() for c in cards
+         if str(c["payload"].get("city")) not in A.CITY_XY]
+check(not no_xy, "每张卡的目的地都登记了坐标", "、".join(dict.fromkeys(no_xy))[:60])
+out_box = [name for name, (lng, lat) in A.CITY_XY.items()
+           if not (A._MAP_BOX[0] <= lng <= A._MAP_BOX[1] and A._MAP_BOX[2] <= lat <= A._MAP_BOX[3])]
+check(not out_box, "坐标全落在示意图范围内，点不会画到画布外", "、".join(out_box[:4]))
+check(all(name in A.CITY_XY for name in A.ORIGIN_CITIES), "出发地候选全都有坐标",
+      "、".join(n for n in A.ORIGIN_CITIES if n not in A.CITY_XY)[:40])
+check(A.ORIGIN_DEFAULT in A.ORIGIN_CITIES, "默认出发地在候选里")
+
+intro = A._intro_html(card, "上海市")
+check("dt-intro" in intro and "dt-route" in intro, "片头里有航线而不只是图片")
+check("pathLength='1'" in intro, "描线用 pathLength=1，dash 单位和实际路径长度脱钩")
+check("dt-intro-hero" in intro and str(card["img"]) in intro, "片头收在目的地封面上")
+check("从上海出发 → 成都" in intro, "字幕写清了出发地到目的地", A.re.sub(r"<[^>]+>", " ", intro)[-60:].strip())
+check("--dt-zoom-origin:" in intro, "推镜的缩放原点按目的地坐标算，不是写死居中")
+check(A._intro_html({"payload": {"city": "不存在的城"}, "img": ""}, "北京市") == "",
+      "查不到坐标就干脆不播，不能把点画歪")
+# 出发地换成没坐标的地方时，航线段整段消失，但片头照播（目的地还是画得准）
+noref = A._intro_html(card, "没听过的城")
+check("dt-route" not in noref and "dt-dst" in noref, "出发地没坐标时退化成只标目的地")
+same = A._intro_html(card, "成都市")
+check("dt-route" not in same and "dt-src" not in same, "出发地=目的地时不画退化的零长航线")
+check("成都就是出发地，落地直接开逛" in same, "同城时字幕不再自问自答", A.re.sub(r"<[^>]+>", " ", same)[-60:].strip())
+check("°E" in same and "°N" in same, "经纬网带度数标注，看着是张有坐标的图")
+
+src = (ROOT / "app.py").read_text(encoding="utf-8")
+check("@keyframes dtRouteDraw" in src and "@keyframes dtIntroZoom" in src,
+      "描线和推镜的时间轴还在 CSS 里（st.markdown 会吃掉 <script>，动画只能靠这套 keyframes）")
+check(".st-key-intro_skip" in src, "跳过按钮的定位样式还在，不然会被片头盖住点不到")
+
+at3 = new_at()
+d3 = next(str(b.key) for b in at3.button if str(b.key).startswith("detail_"))
+played = markdown_hits(at3, "<div class='dt-intro'", lambda: (at3.button(key=d3).click(), at3.run()))
+check(played == 1, "第一次打开详情只播一次启程片头", str(played))
+check("dt-intro" in texts(at3), "片头确实进了页面")
+check(any(str(b.key) == "intro_skip" for b in at3.button), "片头期间有「跳过片头」按钮")
+check(any(str(b.key) == "f_origin" for b in at3.selectbox), "详情页里能选出发地")
+again = markdown_hits(at3, "<div class='dt-intro'", lambda: at3.run())
+check(again == 0, "重跑一轮后片头不再挡正文（每张卡只播一次）", str(again))
+
+# 跳过之后弹窗还得开着，不能把详情一起关了
+at4 = new_at()
+d4 = next(str(b.key) for b in at4.button if str(b.key).startswith("detail_"))
+markdown_hits(at4, "<div class='dt-intro'", lambda: (at4.button(key=d4).click(), at4.run()))
+skipped = markdown_hits(at4, "<div class='dt-intro'", lambda: (at4.button(key="intro_skip").click(), at4.run()))
+check(skipped == 0, "点跳过片头不再重播", str(skipped))
+check("这趟适合谁" in texts(at4), "跳过之后详情正文照常开着")
+# 换出发地要重播：航线得跟着新的出发城市重画
+replayed = markdown_hits(at4, "<div class='dt-intro'", lambda: at4.selectbox(key="f_origin").set_value("乌鲁木齐市").run())
+check(replayed == 1, "换出发地会重播片头", str(replayed))
+check("从乌鲁木齐出发" in texts(at4), "重播的航线按新出发地画", str(at4.session_state.get("_intro_seen")))
+
 # 卡片正面必须自带「几天几晚 + 价格」，否则挑起来心里没底
 face = A._card_face(card, 0)
 check("天" in face and "晚" in face, "卡片正面写了几天几晚", re.sub(r"<[^>]+>", " ", face)[-90:].strip())

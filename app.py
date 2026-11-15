@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from contextlib import contextmanager
@@ -2352,6 +2353,145 @@ div[data-testid="stDialog"] > div {
 [data-testid="stDialog"] .dt-fit-quote::before {
     background: rgba(148, 163, 184, .28);
 }
+/* 启程片头：整屏覆盖，时间轴全在 CSS 里（st.markdown 会把 <script> 过滤掉，
+   所以「描线 -> 推镜 -> 封面淡入 -> 收场」只能靠 animation-delay 串起来）。
+   0.0s 地图淡入 / 0.55s 红线描出 / 2.05s 流光跑两趟 / 2.45s 推镜放大目的地
+   / 3.85s 封面淡入 / 5.05s 整块退场。 */
+[data-testid="stDialog"] .dt-intro {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    overflow: hidden;
+    background: radial-gradient(120% 90% at 50% 32%, #0C1E36 0%, #050B16 72%);
+    animation: dtIntroOut .65s ease 5.05s forwards;
+}
+[data-testid="stDialog"] .dt-intro-map {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    transform-origin: var(--dt-zoom-origin, 50% 50%);
+    animation: dtIntroZoom 1.5s cubic-bezier(.66, .02, .34, 1) 2.45s forwards;
+}
+[data-testid="stDialog"] .dt-intro-svg {
+    width: min(92vw, 1160px);
+    height: auto;
+    opacity: 0;
+    animation: dtIntroIn .7s ease .05s forwards;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-grat line {
+    stroke: rgba(120, 160, 210, .15);
+    stroke-width: 1;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-dot {
+    fill: rgba(120, 160, 210, .40);
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-route {
+    fill: none;
+    stroke: #FF4D4D;
+    stroke-width: 4;
+    stroke-linecap: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    filter: drop-shadow(0 0 7px rgba(255, 77, 77, .55));
+    animation: dtRouteDraw 1.75s ease-out .55s forwards;
+}
+/* 描完再跑一趟流光：dasharray 用 pathLength=1 的相对单位，任何长度都是同一套数 */
+[data-testid="stDialog"] .dt-intro-svg .dt-route-flow {
+    fill: none;
+    stroke: #FFE08A;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-dasharray: .035 .965;
+    opacity: 0;
+    animation: dtRouteFlow 1.05s linear 2.05s 2 forwards;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-src,
+[data-testid="stDialog"] .dt-intro-svg .dt-dst {
+    transform-box: fill-box;
+    transform-origin: center;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-src {
+    fill: rgba(96, 165, 250, .9);
+    animation: dtPing 1.15s ease-out .2s 2 both;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-dst {
+    fill: #FF6B6B;
+    animation: dtPing 1.15s ease-out 2.15s 2 both;
+}
+[data-testid="stDialog"] .dt-intro-svg text {
+    font-size: 26px;
+    fill: #C6D6EC;
+    text-anchor: middle;
+}
+[data-testid="stDialog"] .dt-intro-svg .dt-dst-label {
+    fill: #FFD9D9;
+    font-weight: 700;
+}
+/* 经纬度标注：有它才读得出这是张有坐标的图，而不是一堆散点 */
+[data-testid="stDialog"] .dt-intro-svg .dt-deg {
+    font-size: 15px;
+    fill: rgba(150, 180, 215, .38);
+    text-anchor: start;
+}
+[data-testid="stDialog"] .dt-intro-hero {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0;
+    animation: dtHeroIn 1.15s ease 3.85s forwards;
+}
+[data-testid="stDialog"] .dt-intro-cap {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 12%;
+    text-align: center;
+    font-size: clamp(20px, 3.1vw, 34px);
+    letter-spacing: .04em;
+    color: #EAF2FF;
+    text-shadow: 0 2px 18px rgba(0, 0, 0, .7);
+    opacity: 0;
+    animation: dtHeroIn .9s ease 4.15s forwards;
+}
+/* 跳过按钮要浮在片头之上：z-index 比 .dt-intro 高就点得到，点一下重跑一轮，片头不再渲染。
+   满宽按钮样式得按掉，否则这颗胶囊会横贯整个视口。 */
+.st-key-intro_skip {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    left: auto;
+    width: max-content;
+    z-index: 1500;
+}
+.st-key-intro_skip button {
+    width: max-content;
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: rgba(9, 20, 36, .72);
+    border: 1px solid rgba(148, 190, 240, .45);
+    color: #DCE9FA;
+    backdrop-filter: blur(6px);
+}
+@keyframes dtIntroIn { to { opacity: 1 } }
+@keyframes dtIntroOut { to { opacity: 0; visibility: hidden; pointer-events: none } }
+@keyframes dtRouteDraw { to { stroke-dashoffset: 0 } }
+@keyframes dtRouteFlow {
+    0% { opacity: .95; stroke-dashoffset: 1 }
+    100% { opacity: .95; stroke-dashoffset: 0 }
+}
+@keyframes dtIntroZoom { to { transform: scale(2.35) } }
+@keyframes dtHeroIn {
+    from { opacity: 0; transform: translateY(10px) scale(1.04) }
+    to { opacity: 1; transform: none }
+}
+@keyframes dtPing {
+    0% { transform: scale(1); opacity: .95 }
+    60% { transform: scale(1.9); opacity: .3 }
+    100% { transform: scale(1); opacity: .95 }
+}
 /* 逐日骨架：一条竖线串起 D1/D2/D3，比一堆段落更像行程 */
 [data-testid="stDialog"] .dt-tl {
     border-left: 2px solid rgba(96, 165, 250, .35);
@@ -2780,6 +2920,149 @@ def _related_face(preset: dict[str, Any], slot: int) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# 启程片头：出发地 -> 目的地的航线示意（纯 SVG + CSS，不引第三方地图）
+# ---------------------------------------------------------------------------
+# 这里有意不画国界线：公开版图要审图号，少一段岛礁就是硬伤，而且接高德静态地图要吃配额、
+# 还得算投影对齐。经纬网 + 城市点位当「航线示意图」用，视觉上就是航线动画，
+# 并且不依赖任何外部请求——离线套件能逐字断言画了什么。
+_MAP_BOX = (73.0, 135.5, 16.0, 54.0)  # 经度 min/max、纬度 min/max
+_MAP_W, _MAP_H = 1000, 742
+
+CITY_XY: dict[str, tuple[float, float]] = {
+    # 卡片覆盖的目的地
+    "北京市": (116.41, 39.90),
+    "上海市": (121.47, 31.23),
+    "广州市": (113.26, 23.13),
+    "深圳市": (114.06, 22.55),
+    "成都市": (104.07, 30.57),
+    "杭州市": (120.15, 30.27),
+    "西安市": (108.94, 34.34),
+    "厦门市": (118.09, 24.48),
+    "大理市": (100.22, 25.62),
+    "甘孜州": (101.96, 30.05),
+    "梅州市": (116.12, 24.29),
+    # 出发地候选（都是常见枢纽）
+    "重庆市": (106.55, 29.56),
+    "南京市": (118.80, 32.06),
+    "武汉市": (114.30, 30.60),
+    "长沙市": (112.94, 28.23),
+    "郑州市": (113.63, 34.75),
+    "天津市": (117.20, 39.13),
+    "青岛市": (120.38, 36.07),
+    "沈阳市": (123.43, 41.80),
+    "哈尔滨市": (126.53, 45.80),
+    "昆明市": (102.83, 24.88),
+    "贵阳市": (106.63, 26.65),
+    "兰州市": (103.83, 36.06),
+    "乌鲁木齐市": (87.62, 43.79),
+    "三亚市": (109.51, 18.25),
+    "苏州市": (120.59, 31.30),
+    "福州市": (119.30, 26.08),
+    "济南市": (117.00, 36.65),
+    "合肥市": (117.28, 31.86),
+    "南昌市": (115.86, 28.68),
+    "南宁市": (108.37, 22.82),
+    "长春市": (125.32, 43.90),
+    "大连市": (121.54, 38.95),
+}
+
+ORIGIN_CITIES = [
+    "北京市", "上海市", "广州市", "深圳市", "杭州市", "成都市", "重庆市", "南京市",
+    "武汉市", "西安市", "苏州市", "天津市", "青岛市", "济南市", "郑州市", "长沙市",
+    "南昌市", "合肥市", "福州市", "厦门市", "昆明市", "贵阳市", "南宁市", "大连市",
+    "乌鲁木齐市",
+]
+ORIGIN_DEFAULT = "北京市"
+
+
+def _map_xy(lng: float, lat: float) -> tuple[float, float]:
+    """经纬度 -> 示意图像素。经度按中纬度压缩，画出来才不会是竖长的一条。"""
+    lng_min, lng_max, lat_min, lat_max = _MAP_BOX
+    per_lat = _MAP_H / (lat_max - lat_min)
+    per_lng = per_lat * math.cos(math.radians((lat_min + lat_max) / 2))
+    return (lng - lng_min) * per_lng, (lat_max - lat) * per_lat
+
+
+def _route_arc(x1: float, y1: float, x2: float, y2: float) -> str:
+    """两点之间的航线弧：取法线方向的二次贝塞尔，控制点一律朝画面上方鼓。"""
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    dx, dy = x2 - x1, y2 - y1
+    span = math.hypot(dx, dy) or 1.0
+    bend = min(110.0, span * 0.24)
+    cx, cy = mx - dy / span * bend, my + dx / span * bend
+    if cy > my:
+        cx, cy = mx + dy / span * bend, my - dx / span * bend
+    return f"M {x1:.1f} {y1:.1f} Q {cx:.1f} {cy:.1f} {x2:.1f} {y2:.1f}"
+
+
+def _graticule_svg() -> str:
+    bits = []
+    for lng in range(80, 136, 10):
+        x = _map_xy(float(lng), 0.0)[0]
+        bits.append(f"<line x1='{x:.1f}' y1='0' x2='{x:.1f}' y2='{_MAP_H}'/>")
+        bits.append(f"<text class='dt-deg' x='{x + 6:.1f}' y='{_MAP_H - 10:.0f}'>{lng}°E</text>")
+    for lat in range(20, 51, 10):
+        y = _map_xy(0.0, float(lat))[1]
+        bits.append(f"<line x1='0' y1='{y:.1f}' x2='{_MAP_W}' y2='{y:.1f}'/>")
+        bits.append(f"<text class='dt-deg' x='8' y='{y - 8:.1f}'>{lat}°N</text>")
+    return "".join(bits)
+
+
+def _intro_html(preset: dict[str, Any], origin: str) -> str:
+    """片头一整块覆盖弹窗：经纬网淡入 -> 红线描出航线 -> 推镜放大目的地 -> 封面淡入。
+
+    没有目的地坐标就不播，宁可不演也不能把点画歪。
+    """
+    city = str((preset.get("payload") or {}).get("city") or "")
+    dst = CITY_XY.get(city)
+    if not dst:
+        return ""
+    dx_, dy_ = _map_xy(*dst)
+    # 出发地和目的地同城时不画航线：两点重合，弧退化成看不见的一小截，字幕也会自问自答
+    src = CITY_XY.get(origin) if origin != city else None
+
+    others = "".join(
+        f"<circle class='dt-dot' cx='{_map_xy(*xy)[0]:.1f}' cy='{_map_xy(*xy)[1]:.1f}' r='2.6'/>"
+        for name, xy in CITY_XY.items()
+        if name not in (city, origin)
+    )
+    route = ""
+    if src:
+        sx, sy = _map_xy(*src)
+        d = _route_arc(sx, sy, dx_, dy_)
+        route = (
+            f"<path class='dt-route' pathLength='1' d='{d}'/>"
+            f"<path class='dt-route-flow' pathLength='1' d='{d}'/>"
+            f"<circle class='dt-src' cx='{sx:.1f}' cy='{sy:.1f}' r='6.5'/>"
+            f"<text class='dt-src-label' x='{sx:.1f}' y='{sy - 16:.1f}'>{escape(_stem(origin))}</text>"
+        )
+    svg = (
+        f"<svg class='dt-intro-svg' viewBox='0 0 {_MAP_W} {_MAP_H}' preserveAspectRatio='xMidYMid meet'>"
+        f"<g class='dt-grat'>{_graticule_svg()}{others}</g>"
+        f"{route}"
+        f"<circle class='dt-dst' cx='{dx_:.1f}' cy='{dy_:.1f}' r='8.5'/>"
+        f"<text class='dt-dst-label' x='{dx_:.1f}' y='{dy_ - 20:.1f}'>{escape(_stem(city))}</text>"
+        f"</svg>"
+    )
+    img = str(preset.get("img") or "")
+    hero = f"<img class='dt-intro-hero' src='{img}' alt=''>" if img else ""
+    if src:
+        cap = f"从{_stem(origin)}出发 → {_stem(city)}"
+    elif origin == city:
+        cap = f"{_stem(city)}就是出发地，落地直接开逛"
+    else:
+        cap = f"目的地：{_stem(city)}"
+    zoom = f"{dx_ / _MAP_W * 100:.1f}% {dy_ / _MAP_H * 100:.1f}%"
+    return (
+        f"<div class='dt-intro' style='--dt-zoom-origin:{zoom}'>"
+        f"<div class='dt-intro-map'>{svg}</div>"
+        f"{hero}"
+        f"<div class='dt-intro-cap'>{escape(cap)}</div>"
+        f"</div>"
+    )
+
+
 def _cover_preload_html(cards: list[dict[str, Any]]) -> str:
     """首屏封面的下载在 hero 这块就发起，不等卡片 DOM。
 
@@ -2892,6 +3175,20 @@ def _render_detail(preset: dict[str, Any]) -> None:
     if full_width_button("← 返回卡片列表", key="detail_back"):
         st.session_state["_open_detail"] = ""
         st.rerun()
+
+    # 出发地要先实例化再读值：同一轮里读到的是刚选中的那个，片头的航线才画得对。
+    ocol, _bcol = st.columns([1, 2.2], gap="small")
+    with ocol:
+        seed_state("f_origin", ORIGIN_DEFAULT)
+        st.selectbox("出发地", ORIGIN_CITIES, key="f_origin")
+    origin = str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
+    intro = _intro_html(preset, origin)
+    # 每张卡 + 每个出发地只播一次：换卡、换出发地都会重播，其他任何重跑都不再挡正文。
+    intro_tag = f"{preset['key']}|{origin}"
+    if intro and st.session_state.get("_intro_seen") != intro_tag:
+        st.markdown(intro, unsafe_allow_html=True)
+        st.session_state["_intro_seen"] = intro_tag
+        full_width_button("跳过片头 ▸", key="intro_skip")
 
     left, right = st.columns([1.55, 1], gap="large")
 
