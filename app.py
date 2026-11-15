@@ -2458,10 +2458,12 @@ div[data-testid="stDialog"] > div {
 }
 /* 跳过按钮要浮在片头之上：z-index 比 .dt-intro 高就点得到，点一下重跑一轮，片头不再渲染。
    满宽按钮样式得按掉，否则这颗胶囊会横贯整个视口。 */
+/* 右下角让到 64px：Streamlit Cloud 外壳的「Manage app」按钮占掉底部 44px，
+   owner 登录时正好压住跳过按钮（实测重叠 101×22），普通访客看不到那个按钮。 */
 .st-key-intro_skip {
     position: fixed;
     right: 22px;
-    bottom: 22px;
+    bottom: 64px;
     left: auto;
     width: max-content;
     z-index: 1500;

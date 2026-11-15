@@ -326,6 +326,13 @@ src = (ROOT / "app.py").read_text(encoding="utf-8")
 check("@keyframes dtRouteDraw" in src and "@keyframes dtIntroZoom" in src,
       "描线和推镜的时间轴还在 CSS 里（st.markdown 会吃掉 <script>，动画只能靠这套 keyframes）")
 check(".st-key-intro_skip" in src, "跳过按钮的定位样式还在，不然会被片头盖住点不到")
+# 线上 owner 视角里，Streamlit Cloud 外壳的「Manage app」按钮占掉底部 44px，
+# 实测把 bottom:22px 的跳过按钮压住 101×22，所以离底必须留出那段高度。
+skip_css = re.search(r"\.st-key-intro_skip \{([^}]*)\}", src)
+skip_bottom = re.search(r"bottom:\s*(\d+)px", skip_css.group(1)) if skip_css else None
+check(skip_bottom is not None and int(skip_bottom.group(1)) >= 56,
+      "跳过按钮离底 ≥56px，不会被 Cloud 外壳的 Manage app 压住",
+      f"bottom={skip_bottom.group(1) if skip_bottom else '无'}")
 
 at3 = new_at()
 d3 = next(str(b.key) for b in at3.button if str(b.key).startswith("detail_"))
