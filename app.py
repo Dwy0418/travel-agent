@@ -2723,7 +2723,8 @@ def render_empty_state() -> None:
                 st.markdown(_card_face(preset, slot), unsafe_allow_html=True)
                 # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
                 if st.button("看详情", key=f"detail_{preset['key']}"):
-                    show_detail(preset)
+                    st.session_state["_open_detail"] = preset["key"]
+                    st.rerun()
                 if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
                     # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
                     st.session_state["_pending_preset"] = preset
@@ -2887,6 +2888,11 @@ def _render_detail(preset: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
+    # 弹窗自带的 ✕ 太小，明确给一个「返回」：清掉标记重跑一轮，弹窗就不再被打开。
+    if full_width_button("← 返回卡片列表", key="detail_back"):
+        st.session_state["_open_detail"] = ""
+        st.rerun()
+
     left, right = st.columns([1.55, 1], gap="large")
 
     with left:
@@ -2976,10 +2982,12 @@ def _render_detail(preset: dict[str, Any]) -> None:
         )
 
         if full_width_button("🚀 就按这个行程规划", kind="primary", key=f"go_{preset['key']}"):
+            st.session_state["_open_detail"] = ""
             st.session_state["_pending_preset"] = preset
             st.session_state["_run_preset"] = True
             st.rerun()
         if full_width_button("✏️ 只套用，我先改条件", key=f"fill_{preset['key']}"):
+            st.session_state["_open_detail"] = ""
             st.session_state["_pending_preset"] = preset
             st.rerun()
 
@@ -2991,8 +2999,9 @@ def _render_detail(preset: dict[str, Any]) -> None:
             with col:
                 st.markdown(_related_face(item, slot), unsafe_allow_html=True)
                 if full_width_button(f"看「{_stem(str(item['payload'].get('city') or ''))}」这条", key=f"rel_{item['key']}"):
-                    st.session_state["_pending_preset"] = item
-                    st.session_state["_run_preset"] = True
+                    # 推荐位只是换一张卡继续看详情。这里绝不能写 _run_preset：
+                    # 一旦写了，点「看这条」就等于点「开始规划」，弹窗会被大模型请求顶掉。
+                    st.session_state["_open_detail"] = item["key"]
                     st.rerun()
 
 
@@ -3011,6 +3020,30 @@ def show_detail(preset: dict[str, Any]) -> None:
             pass
     with popover_or_expander(f"📍 {preset['title']} 详情"):
         _render_detail(preset)
+
+
+def find_card(key: str) -> dict[str, Any] | None:
+    for group in CITY_CARDS.values():
+        for item in group:
+            if item["key"] == key:
+                return item
+    return None
+
+
+def render_open_detail() -> None:
+    """详情弹窗由 _open_detail 驱动，而不是在按钮回调里当场打开。
+
+    只有这样「看『xx』这条」才能只换一张卡继续看详情，「返回」才能真的关掉，
+    而不是像以前那样点推荐位顺手把 AI 规划也触发了。
+    """
+    key = str(st.session_state.get("_open_detail") or "")
+    if not key:
+        return
+    preset = find_card(key)
+    if preset is None:
+        st.session_state["_open_detail"] = ""
+        return
+    show_detail(preset)
 
 
 
@@ -3736,6 +3769,8 @@ def apply_pending_chat() -> None:
     text = st.session_state.pop("_pending_chat", None)
     if not text:
         return
+    # 用户开口了就把详情关掉，管家的话别压在弹窗底下
+    st.session_state["_open_detail"] = ""
     log = _chat_log()
     log.append({"role": "user", "content": str(text)})
 
@@ -4447,6 +4482,8 @@ def main() -> None:
     )
     if start_run:
         st.session_state.pop("result", None)
+        # 开跑了就别让详情弹窗压在进度上
+        st.session_state["_open_detail"] = ""
         _plan(str(rerun_request) if rerun_request is not None else payload["request"], payload)
 
     result = st.session_state.get("result")
@@ -4458,6 +4495,9 @@ def main() -> None:
     # 输入卡放在最后：主区里的 chat_input 由 Streamlit 钉在视口底部，
     # 点击与提交都只写标记 + rerun，规划在下一轮顶部执行一次。
     render_composer()
+
+    # 详情弹窗最后打开：它压在整页之上，前面该回填的条件这轮都已经落好。
+    render_open_detail()
 
     # 背景必须在输入卡之后注入：换省份时旧城市会被 _sync_select 重置，
     # 早于控件读 session_state 就会拿到上一轮的失效城市，背景慢一整拍。

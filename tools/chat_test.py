@@ -11,6 +11,7 @@ import sys
 from datetime import date, timedelta
 from html import unescape
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -205,6 +206,69 @@ opened_key = detail_key.removeprefix("detail_")
 opened = next(c for c in A.CITY_CARDS[opened_key.rsplit("-", 1)[0]] if c["key"] == opened_key)
 bullets = re.findall(r"<div class='dt-li'>· (.*?)</div>", body)
 check(bullets == opened["stops"], "详情列的看点就是卡片登记的主点", f"{bullets} vs {opened['stops']}")
+
+# 3a. 「看『xx』这条」只能换一张卡继续看详情，绝不能顺手把 AI 规划点了
+#（旧版这里写的是 _run_preset，点一下背景变暗、顶部转圈、反复吐「已套用」，永远进不去详情）
+# AppTest 会把弹窗元素留在树里，元素本身证明不了弹窗关没关。st 是和 app 共享的模块对象，
+# 所以这里包住 st.dialog，直接数「这一轮到底开没开弹窗」。
+opens: list[str] = []
+_real_dialog = A.st.dialog
+
+
+def _counting_dialog(*dargs: Any, **dkw: Any):
+    deco = _real_dialog(*dargs, **dkw)
+
+    def wrap(fn):
+        inner = deco(fn)
+
+        def call(*args: Any, **kw: Any):
+            opens.append(str(A.st.session_state.get("_open_detail") or ""))
+            return inner(*args, **kw)
+
+        return call
+
+    return wrap
+
+
+A.st.dialog = _counting_dialog
+try:
+    rel_key = next(str(b.key) for b in at.button if str(b.key).startswith("rel_"))
+    rel_target = rel_key.removeprefix("rel_")
+    opened_before = len(opens)
+    at.button(key=rel_key).click()
+    at.run()
+    assert not at.exception, f"点推荐位抛异常：{at.exception}"
+    check(at.session_state.get("_open_detail") == rel_target, "点推荐位只把弹窗换到那张卡", str(at.session_state.get("_open_detail")))
+    # 弹窗里的按钮被点时，那一轮必然先把旧弹窗打开一次才拿到 click，所以稳定后最后一次才是新卡
+    check(opens[-1] == rel_target and opens.count(rel_target) == 1, "稳定后打开的是新那张卡", str(opens[-3:]))
+    check(not at.error, "点推荐位没有触发规划（离线缺密钥才会报错）", str([str(e.value)[:40] for e in at.error])[:80])
+    body_rel = texts(at)
+    check("已套用" not in body_rel, "点推荐位不再吐「已套用」")
+    check("这趟适合谁" in body_rel, "换卡之后还是详情弹窗，不是回列表")
+    switched = A.find_card(rel_target)
+    check(switched is not None and str(switched["title"]) in body_rel, "弹窗正文确实是新那张卡", str(switched and switched["title"]))
+
+    # 「返回」要真的关掉弹窗：清标记 + 那一轮不再调用 st.dialog
+    opened_before = len(opens)
+    at.button(key="detail_back").click()
+    at.run()
+    assert not at.exception, f"点返回抛异常：{at.exception}"
+    check(not str(at.session_state.get("_open_detail") or ""), "点返回清空了打开标记", str(at.session_state.get("_open_detail")))
+    check(len(opens) == opened_before + 1, "返回后不再重开详情，只多算拿到 click 那一轮", f"{len(opens)} vs {opened_before}")
+
+    # 反过来：详情里点「就按这个行程规划」才应该开跑
+    at.button(key=detail_key).click()
+    at.run()
+    assert not at.exception, f"重开详情抛异常：{at.exception}"
+    check(opens[-1] == opened_key, "重新点卡片又能打开详情", str(opens[-3:]))
+    opened_before = len(opens)
+    at.button(key=f"go_{opened_key}").click()
+    at.run()
+    assert not at.exception, f"点规划抛异常：{at.exception}"
+    check(len(at.error) > 0, "只有『就按这个行程规划』会开跑", str(len(at.error)))
+    check(len(opens) == opened_before + 1, "开跑后详情不再重开，只多算拿到 click 那一轮", f"{len(opens)} vs {opened_before}")
+finally:
+    A.st.dialog = _real_dialog
 
 # 卡片正面必须自带「几天几晚 + 价格」，否则挑起来心里没底
 face = A._card_face(card, 0)
