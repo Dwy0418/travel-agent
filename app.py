@@ -2235,6 +2235,37 @@ div[data-testid="stDialog"] > div {
     line-height: 1.75;
     color: #D7E2F1;
 }
+/* 「这趟适合谁」用左侧短竖线收拢，跟上面「主要看点」的圆点列表拉开差别，
+   右栏两块面板不至于看着像同一种东西。 */
+[data-testid="stDialog"] .dt-fit {
+    position: relative;
+    padding-left: 12px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: #D7E2F1;
+}
+[data-testid="stDialog"] .dt-fit + .dt-fit {
+    margin-top: 7px;
+}
+[data-testid="stDialog"] .dt-fit::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: .42em;
+    bottom: .42em;
+    width: 2px;
+    border-radius: 2px;
+    background: rgba(96, 165, 250, .45);
+}
+/* 引用行故意做成另一种质地：一眼能看出是用户自己说过的话，不是系统的判断 */
+[data-testid="stDialog"] .dt-fit-quote {
+    margin-top: 10px;
+    font-style: italic;
+    color: #9FB2CC;
+}
+[data-testid="stDialog"] .dt-fit-quote::before {
+    background: rgba(148, 163, 184, .28);
+}
 /* 逐日骨架：一条竖线串起 D1/D2/D3，比一堆段落更像行程 */
 [data-testid="stDialog"] .dt-tl {
     border-left: 2px solid rgba(96, 165, 250, .35);
@@ -2711,8 +2742,14 @@ _STOP_SEP = re.compile(r"[+＋、,，/／]|→")
 
 
 def _stops_of(preset: dict[str, Any]) -> list[str]:
-    """从卡片文案里抠出主要看点：这套文案习惯用「+」「、」并列站点，是现成的线索。"""
-    text = f"{preset.get('desc') or ''} {preset['payload'].get('request') or ''}"
+    """从卡片的 desc 里抠主要看点：这套文案习惯用「+」「、」并列站点，是现成的线索。
+
+    只读 desc，不读 payload['request']——后者是「想走经典路线」「尽量少走路」这种用户诉求，
+    混进看点列表就成了假景点。试过按词性再筛一遍，但 desc 的尾巴是整句评价
+    （「颐和园一次走完」），整段丢会赔掉真地点、剪尾巴又剪出「人少」这种碎片，
+    所以留到卡片数据里显式存一份 stops 再治。
+    """
+    text = str(preset.get("desc") or "")
     out: list[str] = []
     for token in _STOP_SEP.split(text):
         bit = token.strip(" 　。")
@@ -2813,13 +2850,27 @@ def _render_detail(preset: dict[str, Any]) -> None:
                 + "</div>",
                 unsafe_allow_html=True,
             )
-        pace = "节奏偏紧，愿意早起晚归" if "特种兵拉练" in str(row.get("preferences") or "") else "节奏宽松，一天不赶两个片区"
-        who = "、".join(t.split(" ", 1)[1] if " " in t else t for t in tags) or "2 人同行"
+        # 每天几个点是拿文案抠出来的看点数除天数，只能当「满不满」的旁证：
+        # 川西那种长途自驾卡抠出 1 个点/天，实际是特种兵。所以这里两个信号都看。
+        tight = "特种兵拉练" in str(row.get("preferences") or "") or per_day >= 3
+        who = "、".join(
+            (t.split(" ", 1)[1] if " " in t else t) for t in tags[:2]
+        ) + ("等" if len(tags) > 2 else "")
+        who = who or "两人同行"
+        fit = [
+            f"适合{who}，{f'全程 {len(stops)} 个主点' if stops else '主点等规划时逐日排'}",
+            "节奏偏满，得愿意早起晚归" if tight else "节奏偏松，睡到自然醒再出门",
+        ]
+        # 「你说过」只能引用用户真打过的字：ask_lines 有内容才代表他开过口。
+        # 首屏直接点卡进来的，那句 request 是卡片自带的文案，别算在用户头上。
+        spoke = bool(st.session_state.get("ask_lines"))
+        quote = str((st.session_state.get("f_request") if spoke else row.get("request")) or "").strip()
+        quote = (quote[:26] + "…") if len(quote) > 26 else quote
+        said_as = "你说过" if spoke else "这条线的设定"
         st.markdown(
-            "<div class='dt-panel'><div class='dt-sec'>适不适合你</div>"
-            f"<div class='dt-li'>· 为{escape(who)}排的一天不超过 3 个主点</div>"
-            f"<div class='dt-li'>· {escape(pace)}</div>"
-            + (f"<div class='dt-li'>· 你说的原话：{escape(str(row['request']))}</div>" if row.get("request") else "")
+            "<div class='dt-panel'><div class='dt-sec'>这趟适合谁</div>"
+            + "".join(f"<div class='dt-fit'>{escape(line)}</div>" for line in fit)
+            + (f"<div class='dt-fit dt-fit-quote'>{said_as}：{escape(quote)}</div>" if quote else "")
             + "</div>",
             unsafe_allow_html=True,
         )
