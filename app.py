@@ -2704,7 +2704,7 @@ def render_empty_state() -> None:
         "<div class='hero'>"
         "<div class='hero-title'>✈️ 旅游规划助手</div>"
         "<div class='hero-sub'>挑一张卡片直接出行程，或在最下方一句话告诉管家。</div>"
-        "</div>",
+        "</div>" + _cover_preload_html(cards),
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -2776,6 +2776,19 @@ def _related_face(preset: dict[str, Any], slot: int) -> str:
         f"<span class='pc-rel-title'>{escape(preset['title'])}</span>"
         f"<span class='pc-rel-meta'>🗓 {days} 天 {max(days - 1, 0)} 晚{price}</span>"
         "</div></div>"
+    )
+
+
+def _cover_preload_html(cards: list[dict[str, Any]]) -> str:
+    """首屏封面的下载在 hero 这块就发起，不等卡片 DOM。
+
+    实测 hero 出现约 0.86s、卡片出现约 1.98s：脚本中间还要跑一千多毫秒，
+    等 .pc-face-N 的 background-image 生效才发起请求，12 张约 1.5MB 就正好空着。
+    """
+    return "".join(
+        f'<link rel="preload" as="image" href="{escape(item["img"], quote=True)}">'
+        for item in cards
+        if item.get("img")
     )
 
 

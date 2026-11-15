@@ -9,6 +9,7 @@
 import re
 import sys
 from datetime import date, timedelta
+from html import unescape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -89,6 +90,18 @@ check(len([b for b in at.button if str(b.key).startswith("preset_")]) == A.CARD_
       f"首屏铺满 {A.CARD_SLOTS} 张卡", str(len([b for b in at.button if str(b.key).startswith('preset_')])) )
 grid = [m.value for m in at.markdown if "stHorizontalBlock" in str(m.value)]
 check(bool(grid), "网格列数交给 CSS（auto-fit 规则已注入）")
+
+# 冷启动闪烁的根因是「卡片 CSS 出现得太晚」：脚本从 hero 到卡片中间要跑一千多毫秒，
+# 等 background-image 生效才发请求，12 张封面就空着那一秒多。preload 必须挂在最早的块里。
+idx_hero = next((i for i, m in enumerate(at.markdown) if "hero-title" in str(m.value)), -1)
+idx_css = next((i for i, m in enumerate(at.markdown) if ".pc-face-0" in str(m.value)), -1)
+hero_md = str(at.markdown[idx_hero].value) if idx_hero >= 0 else ""
+css_md = str(at.markdown[idx_css].value) if idx_css >= 0 else ""
+pre = [unescape(u) for u in re.findall(r'<link rel="preload" as="image" href="([^"]+)"', hero_md)]
+need = re.findall(r"background-image: url\('([^']+)'\)", css_md)
+check(0 <= idx_hero < idx_css, "preload 比卡片 CSS 更早发出", f"hero={idx_hero} css={idx_css}")
+check(len(pre) == A.CARD_SLOTS and set(pre) == set(need),
+      f"首屏 {A.CARD_SLOTS} 张封面全部预加载", f"preload={len(pre)} 需要={len(need)}")
 
 at.session_state["_pending_chat"] = "10月15号和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜"
 at.run()
