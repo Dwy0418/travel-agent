@@ -621,8 +621,11 @@ CITY_PRIORITY = [
     "西安市", "厦门市", "大理市", "梅州市", "甘孜州",
 ]
 
-# 首屏卡片数：列数由 CSS 的 auto-fit 决定，12 能被 3/4/6 整除，任何断点都不瘸腿。
-CARD_SLOTS = 12
+# 一页 8 张：桌面 4 列正好两行，整页高度落在「视口 - 吸底输入卡」里，
+# scroll-snap 才敢用 mandatory；页数写死 3，凑不满一页时后面的页自动少几张。
+PAGE_SLOTS = 8
+PAGE_COUNT = 3
+CARD_SLOTS = PAGE_SLOTS * PAGE_COUNT
 
 # 「不限」占位项：让用户只看省级 / 全国推荐，而不用被迫选具体城市。
 # 值为空串提交给 Agent 前会被拦截（Agent 要求城市必填）。
@@ -1847,7 +1850,7 @@ div[data-testid="stElementContainer"]:has(.pc-face) {
 }
 @media (min-width: 1500px) {
     div[data-testid="stElementContainer"]:has(.pc-face) {
-        aspect-ratio: 16 / 10;
+        aspect-ratio: 16 / 9;
     }
 }
 @keyframes cardRiseIn {
@@ -2009,21 +2012,14 @@ div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElement
     box-shadow: 0 10px 26px rgba(99, 102, 241, 0.52) !important;
 }
 
-/* ---------- 推荐区标题（随目的地联动的范围提示） ---------- */
-.rec-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    margin: 4px 2px 14px 2px;
-}
-.rec-scope {
+/* ---------- 页首的范围提示（随目的地联动，原来挂在 rec-head 上） ---------- */
+.pc-page-scope {
     font-size: 15px;
     font-weight: 800;
     color: #E2E9F5;
     letter-spacing: 0.4px;
 }
-.rec-scope::before {
+.pc-page-scope::before {
     content: "";
     display: inline-block;
     width: 3px;
@@ -2032,10 +2028,6 @@ div[data-testid="stElementContainer"]:has(.pc-face) ~ div[data-testid="stElement
     border-radius: 2px;
     background: linear-gradient(180deg, #3B82F6, #8B5CF6);
     vertical-align: -1px;
-}
-.rec-tip {
-    font-size: 12px;
-    color: #7C8CA3;
 }
 
 /* ==========================================================================
@@ -2122,10 +2114,6 @@ section[data-testid="stSidebar"][data-collapsed="true"] [data-testid="stSidebarU
     margin-top: 6px !important;
     line-height: 1.6 !important;
 }
-.rec-head {
-    padding: 0 clamp(2px, 0.6vw, 10px);
-    margin-bottom: clamp(8px, 1.4vh, 14px) !important;
-}
 /* 只装 <style> 的 markdown 容器高度为 0，却照样占掉 16px 的 flex gap：
    首屏顶部原本压着 3 份这种全局样式，白吃掉 48px。整颗摘掉，可见内容不受影响。 */
 div[data-testid="stElementContainer"]:has(> div[data-testid="stMarkdown"] div > style:only-child) {
@@ -2155,15 +2143,96 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 }
+/* 一页 8 张，列数只能取 8 的因数，否则末行缺格、吸附高度也和「一屏」对不上。
+   原来 ≥1600 给 6 列（12 张刚好两行），翻页之后 6 列会剩 2 个空格，改成 4 列并限宽。 */
 @media (min-width: 1600px) {
     div[data-testid="stHorizontalBlock"]:has(.pc-face) {
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        max-width: 1400px;
+        margin-inline: auto;
     }
 }
 @media (max-width: 560px) {
     div[data-testid="stHorizontalBlock"]:has(.pc-face) {
         grid-template-columns: 1fr;
     }
+}
+
+/* 整页翻动：Streamlit 里真正在滚的是 main[data-testid="stMain"]，吸附只挂在首屏上
+   （:has(.pc-page)），出行程之后的长文不能被拽回页首。
+   scroll-snap-stop: always 是「滚轮一次别划过两三页」的正解——浏览器每次手势只准停在一个
+   吸附点上，不需要写 JS 做防抖；st.markdown 会吃掉 <script>，这里也写不了。 */
+main[data-testid="stMain"]:has(.pc-page) {
+    scroll-snap-type: y mandatory;
+    scroll-behavior: smooth;
+    scroll-padding-block-end: 208px;   /* 让开吸底输入卡，最后一排卡片能整行露出来 */
+}
+/* 窄屏 2 列要排 4 行，一页比一屏高，mandatory 会把页中内容锁死，退成靠近吸附 */
+@media (max-width: 1023px) {
+    main[data-testid="stMain"]:has(.pc-page) {
+        scroll-snap-type: y proximity;
+    }
+}
+/* hero 也算一个吸附点，否则首屏一滚就被拉到第一页页首，标题永远看不见 */
+.hero,
+.pc-page {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+}
+/* 页外的卡片网格跳过布局（实测 Chrome 仍会把三页都渲染出来，取图靠 _cover_url 压尺寸） */
+div[data-testid="stHorizontalBlock"]:has(.pc-face) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 520px;
+}
+.pc-page {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #8FA6C6;
+}
+.pc-page-no { color: #E2ECFA; }
+.pc-page-nav { margin-left: auto; display: flex; gap: 8px; }
+.pc-nav {
+    padding: 3px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 190, 240, .35);
+    background: rgba(9, 20, 36, .55);
+    color: #BFDBFE;
+    font-size: 12.5px;
+    text-decoration: none;
+    transition: background .18s ease, color .18s ease;
+}
+.pc-nav:hover { background: rgba(59, 130, 246, .30); color: #FFFFFF; }
+/* 分页器钉在输入卡上方；胶囊是锚点，点谁 URL hash 就指到谁的页首 */
+.pc-pager {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 198px;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    z-index: 29;
+    pointer-events: none;
+}
+.pc-pager a {
+    pointer-events: auto;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 190, 240, .38);
+    background: rgba(9, 20, 36, .66);
+    color: #DCE9FA;
+    font-size: 13px;
+    font-weight: 800;
+    text-decoration: none;
+    backdrop-filter: blur(6px);
 }
 
 /* 吸底输入卡：st.container(key="composer") 会带上官方保证的 st-key-composer 类名。
@@ -2610,7 +2679,7 @@ div[data-testid="stDialog"] > div {
     background-size: auto, auto, auto, auto, 200px 200px;
 }
 /* 背景换成实景照片后，小字需要一层投影才压得住亮色画面（如成都茶灯笼那张） */
-.hero-title, .hero-sub, .rec-scope, .rec-tip {
+.hero-title, .hero-sub, .pc-page-scope {
     text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
 }
 /* 行程约束面板：半透明毛玻璃，让背景的风光透出来。墨底压到 0.5 以下仍可读，
@@ -2839,43 +2908,81 @@ def apply_pending_preset() -> None:
 
 
 def render_empty_state() -> None:
-    """首屏视觉中心：Agent 身份 + 随目的地联动的图文推荐卡片。"""
+    """首屏视觉中心：Agent 身份 + 按页排布的推荐卡片，一页一屏、滚动吸附翻页。"""
     cards, scope = pick_recommendations()
+    pages = [cards[i:i + PAGE_SLOTS] for i in range(0, len(cards), PAGE_SLOTS)]
 
     st.markdown(
         "<div class='hero'>"
         "<div class='hero-title'>✈️ 旅游规划助手</div>"
         "<div class='hero-sub'>挑一张卡片直接出行程，或在最下方一句话告诉管家。</div>"
-        "</div>" + _cover_preload_html(cards),
+        # 只预加载第一页的封面：首屏只等 8 张，后两页晚一点到也不挡着看第 1 页
+        "</div>" + _cover_preload_html(pages[0]),
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f"<div class='rec-head'><span class='rec-scope'>{escape(scope)}</span>"
-        "<span class='rec-tip'>点图片看详情，点下方按钮直接出行程</span></div>",
-        unsafe_allow_html=True,
+    st.markdown(_pager_html(len(pages)), unsafe_allow_html=True)
+    st.markdown(_card_photo_css(cards) + _paging_css(len(pages)), unsafe_allow_html=True)
+
+    for pno, page in enumerate(pages):
+        st.markdown(_page_head_html(pno, len(pages), scope), unsafe_allow_html=True)
+        cols = st.columns(len(page), gap="medium")
+        for slot, (col, preset) in enumerate(zip(cols, page)):
+            with col:
+                with card():
+                    # 浮层序号是全局的（对应 _card_photo_css 的规则），飘上来的延迟按页内算
+                    st.markdown(_card_face(preset, pno * PAGE_SLOTS + slot, slot), unsafe_allow_html=True)
+                    # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
+                    if st.button("看详情", key=f"detail_{preset['key']}"):
+                        st.session_state["_open_detail"] = preset["key"]
+                        st.rerun()
+                    if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
+                        # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
+                        st.session_state["_pending_preset"] = preset
+                        st.session_state["_run_preset"] = True
+                        st.rerun()
+
+
+def _pager_html(total: int) -> str:
+    """吸底分页器：锚点胶囊，点了就把 URL hash 写成 #pc-page-N，高亮跟着走。"""
+    pills = "".join(f"<a class='pc-pg pc-pg-{i}' href='#pc-page-{i}'>{i}</a>" for i in range(1, total + 1))
+    return f"<div class='pc-pager'>{pills}</div>"
+
+
+def _page_head_html(pno: int, total: int, scope: str) -> str:
+    """每页顶部的吸附点：页码 + 上一页 / 下一页，锚点跳转靠 scroll-behavior 平滑滚动。"""
+    no = pno + 1
+    nav = ""
+    if no > 1:
+        nav += f"<a class='pc-nav' href='#pc-page-{no - 1}'>← 上一页</a>"
+    if no < total:
+        nav += f"<a class='pc-nav' href='#pc-page-{no + 1}'>下一页 →</a>"
+    return (
+        f"<div class='pc-page' id='pc-page-{no}'>"
+        f"<span class='pc-page-no'>第 {no} / {total} 页</span>"
+        f"<span class='pc-page-scope'>{escape(scope)}</span>"
+        f"<span class='pc-page-nav'>{nav}</span>"
+        "</div>"
     )
-    st.markdown(_card_photo_css(cards), unsafe_allow_html=True)
-
-    # 一整块而不是几行几列：列数交给 CSS 的 auto-fit，侧栏收起 / 宽屏时自动多列
-    cols = st.columns(len(cards), gap="medium")
-    for slot, (col, preset) in enumerate(zip(cols, cards)):
-        with col:
-            with card():
-                # 同一批卡片依次延迟 60ms 出现，形成「依次飘上来」的错落感
-                st.markdown(_card_face(preset, slot), unsafe_allow_html=True)
-                # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
-                if st.button("看详情", key=f"detail_{preset['key']}"):
-                    st.session_state["_open_detail"] = preset["key"]
-                    st.rerun()
-                if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
-                    # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
-                    st.session_state["_pending_preset"] = preset
-                    st.session_state["_run_preset"] = True
-                    st.rerun()
 
 
-def _card_face(preset: dict[str, Any], slot: int) -> str:
-    """卡片正面浮层：遮罩、标签、标题、天数与价格。点击交给底下的照片按钮。"""
+def _paging_css(total: int) -> str:
+    """分页器高亮跟着锚点走：第 N 页被命中就点亮第 N 个胶囊，没命中时算第 1 页。"""
+    active = "background: linear-gradient(96deg, #3B82F6, #8B5CF6); color: #FFFFFF; border-color: transparent;"
+    hit = ", ".join(f"body:has(#pc-page-{i}:target) .pc-pg-{i}" for i in range(1, total + 1))
+    return (
+        "<style>"
+        f"{hit} {{ {active} }}"
+        f"body:not(:has(.pc-page:target)) .pc-pg-1 {{ {active} }}"
+        "</style>"
+    )
+
+
+def _card_face(preset: dict[str, Any], slot: int, delay: int | None = None) -> str:
+    """卡片正面浮层：遮罩、标签、标题、天数与价格。点击交给底下的照片按钮。
+
+    slot 决定挂哪一条 background-image 规则（全局序号），delay 决定飘上来的时机
+    （页内序号，翻页时每一页都从 0 开始错落）。
+    """
     payload = preset.get("payload") or {}
     days = int(payload.get("days") or 0)
     people = int(payload.get("people") or 0)
@@ -2891,7 +2998,7 @@ def _card_face(preset: dict[str, Any], slot: int) -> str:
         label = "人均" if people > 1 else "预算"
         meta += f" · {label} <span class='pc-price'>¥{per:,.0f}</span>"
     return (
-        f"<div class='pc-face pc-face-{slot}' style='animation-delay:{slot * 60}ms'>"
+        f"<div class='pc-face pc-face-{slot}' style='animation-delay:{(slot if delay is None else delay) * 60}ms'>"
         "<div class='pc-shade'></div>"
         f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
         "<div class='pc-hint'>👁 看详情</div>"
@@ -3070,20 +3177,36 @@ def _cover_preload_html(cards: list[dict[str, Any]]) -> str:
 
     实测 hero 出现约 0.86s、卡片出现约 1.98s：脚本中间还要跑一千多毫秒，
     等 .pc-face-N 的 background-image 生效才发起请求，12 张约 1.5MB 就正好空着。
+
+    href 必须和 _card_photo_css 走同一个 _cover_url，尺寸对不上就等于白预加载一遍。
     """
     return "".join(
-        f'<link rel="preload" as="image" href="{escape(item["img"], quote=True)}">'
+        f'<link rel="preload" as="image" href="{escape(_cover_url(item["img"]), quote=True)}">'
         for item in cards
         if item.get("img")
     )
 
 
+def _cover_url(url: str) -> str:
+    """卡片封面按翻页后的实际格子宽度要图。
+
+    数据里存的是 w=900（12 张一屏的时代），翻页之后一列只有 ~350px，
+    24 张还按 900 拿就是白吃一倍流量，首屏比改版前更慢。
+    """
+    if not url:
+        return url
+    base, _, query = url.partition("?")
+    params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+    params.update({"w": "720", "q": "72"})
+    return base + "?" + "&".join(f"{k}={params[k]}" for k in sorted(params))
+
+
 def _card_photo_css(cards: list[dict[str, Any]]) -> str:
     """照片按浮层序号挂到各自的 .pc-face-N 上，卡片换一批就换一份规则。"""
-    rules = [
-        f".pc-face-{slot} {{ background-image: url('{item['img']}'); }}"
-        for slot, item in enumerate(cards)
-    ]
+    rules = []
+    for slot, item in enumerate(cards):
+        src = _cover_url(item["img"])
+        rules.append(f".pc-face-{slot} {{ background-image: url('{src}'); }}")
     return "<style>" + "\n".join(rules) + "</style>"
 
 

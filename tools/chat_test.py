@@ -86,14 +86,36 @@ check("直接用大白话说就行" not in texts(at), "示例文案不再重复�
 check(any(sb.key == "f_country" for sb in at.selectbox), "『精确设置』里的级联下拉照样渲染（收起也在）")
 check(any(str(b.label) == "开始规划" for b in at.button), "『开始规划』还在，只是搬进了输入卡")
 
-faces = [m.value for m in at.markdown if "pc-face-" in str(m.value)]
-check(len([b for b in at.button if str(b.key).startswith("preset_")]) == A.CARD_SLOTS,
-      f"首屏铺满 {A.CARD_SLOTS} 张卡", str(len([b for b in at.button if str(b.key).startswith('preset_')])) )
-grid = [m.value for m in at.markdown if "stHorizontalBlock" in str(m.value)]
-check(bool(grid), "网格列数交给 CSS（auto-fit 规则已注入）")
+btn_ct = len([b for b in at.button if str(b.key).startswith("preset_")])
+check(btn_ct == A.CARD_SLOTS == A.PAGE_SLOTS * A.PAGE_COUNT,
+      f"三页共 {A.CARD_SLOTS} 张卡（每页 {A.PAGE_SLOTS}）", str(btn_ct))
+heads = re.findall(r"<div class='pc-page' id='pc-page-(\d+)'>", texts(at))
+check(heads == [str(i) for i in range(1, A.PAGE_COUNT + 1)], "每页一个吸附点，id 连着编号", str(heads))
+pills = re.findall(r"<a class='pc-pg pc-pg-\d+' href='#pc-page-(\d)'>", texts(at))
+check(pills == heads, "分页器胶囊和页首一一对应", str(pills))
+navs = re.findall(r"<a class='pc-nav' href='#pc-page-(\d)'>([^<]+)</a>", texts(at))
+check(navs == [("2", "下一页 →"), ("1", "← 上一页"), ("3", "下一页 →"), ("2", "← 上一页")],
+      "页内上一页/下一页只给得出得去的方向", str(navs))
+check(A._card_face(A.CITY_CARDS["北京市"][0], 8, 0).count("animation-delay:0ms") == 1,
+      "错落延迟按页内算：第二页第一张不排队")
+
+# 整页吸附：只认 Streamlit 真正在滚的那个容器，且只在首屏（有 .pc-page 时）生效
+snap_src = (ROOT / "app.py").read_text(encoding="utf-8")
+check('main[data-testid="stMain"]:has(.pc-page)' in snap_src, "吸附挂在 stMain 上，出行程后不受影响")
+for needle in ("scroll-snap-type: y mandatory", "scroll-behavior: smooth",
+               "scroll-snap-stop: always", "scroll-padding-block-end: 208px"):
+    check(needle in snap_src, f"翻页样式里有 {needle}")
+check(re.search(r"@media \(max-width: 1023px\)[\s\S]{0,140}scroll-snap-type: y proximity", snap_src),
+      "窄屏一页放不下，退成 proximity 而不是锁死页中内容")
+grid_rules = "\n".join(re.findall(r":has\(\.pc-face\)[^{]*\{[^}]*\}", snap_src))
+check("repeat(6" not in grid_rules, "卡片网格列数只剩 8 的因数（1/2/4），末行不缺格")
+check("content-visibility: auto" in grid_rules, "页外网格标了 content-visibility（省排版，取图仍要靠自己压尺寸）")
+check(".rec-head" not in snap_src and ".pc-page-scope {" in snap_src,
+      "旧的一屏标题样式摘干净了，范围提示改由每页页首接手")
 
 # 冷启动闪烁的根因是「卡片 CSS 出现得太晚」：脚本从 hero 到卡片中间要跑一千多毫秒，
-# 等 background-image 生效才发请求，12 张封面就空着那一秒多。preload 必须挂在最早的块里。
+# 等 background-image 生效才发请求，第一页的封面就空着那一秒多。preload 必须挂在最早的块里。
+# 翻页之后只预加载第一页：首屏只等 8 张，后两页晚一点到也不挡着看第 1 页。
 idx_hero = next((i for i, m in enumerate(at.markdown) if "hero-title" in str(m.value)), -1)
 idx_css = next((i for i, m in enumerate(at.markdown) if ".pc-face-0" in str(m.value)), -1)
 hero_md = str(at.markdown[idx_hero].value) if idx_hero >= 0 else ""
@@ -101,8 +123,12 @@ css_md = str(at.markdown[idx_css].value) if idx_css >= 0 else ""
 pre = [unescape(u) for u in re.findall(r'<link rel="preload" as="image" href="([^"]+)"', hero_md)]
 need = re.findall(r"background-image: url\('([^']+)'\)", css_md)
 check(0 <= idx_hero < idx_css, "preload 比卡片 CSS 更早发出", f"hero={idx_hero} css={idx_css}")
-check(len(pre) == A.CARD_SLOTS and set(pre) == set(need),
-      f"首屏 {A.CARD_SLOTS} 张封面全部预加载", f"preload={len(pre)} 需要={len(need)}")
+check(len(pre) == A.PAGE_SLOTS and set(pre) == set(need[:A.PAGE_SLOTS]),
+      f"第一页 {A.PAGE_SLOTS} 张封面预加载，其余交给吸附时再取", f"preload={len(pre)} 第一页={A.PAGE_SLOTS} 全部={len(need)}")
+# 一页 8 张之后共 24 张封面，Chrome 的 content-visibility 并不会推迟取图，只能把每张要图压小。
+# 4 列栅格一列约 350px，dpr=2 也只要 700px；preload 和 CSS 必须同一个尺寸，否则等于下两遍。
+check(need and all("w=720" in u and "q=72" in u for u in need) and "w=900" not in css_md,
+      "封面统一要 720px 小图，24 张的流量不超过从前 12 张", f"{len(need)} 张，样例={need[0][:60] if need else '无'}")
 
 at.session_state["_pending_chat"] = "10月15号和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜"
 at.run()
