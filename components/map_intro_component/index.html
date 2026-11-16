@@ -619,6 +619,10 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     imagery: bool('imagery', true) ? str('imageryUrl', ESRI) : null,
     dem: bool('terrain', true) ? str('demUrl', TERRARIUM) : null,
     terrainExaggeration: num('exaggeration', 1.12),
+    /* 云层是 6 层全屏 CSS 叠图，软件渲染下很贵：可单独关掉做对照 */
+    clouds: bool('clouds', true),
+    /* 低帧率自动降档（关地形 / 减云层）；adaptive=0 关掉，三档对照测量用 */
+    adaptive: bool('adaptive', true),
 
     /* ---------- 坐标系 ---------- */
     // 行政边界与 POI 数据源为 GCJ-02（高德口径），卫片底图为 WGS-84。
@@ -1104,6 +1108,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
 
     var routeCoords = null;      // 已做坐标纠偏的航线
     var routeSrc = null;
+    var terrainOn = !!cfg.dem;   // 自适应降档会在片头中途把它关掉
 
     /* --------------------------- 加载完成 --------------------------- */
     var ready = new Promise(function (resolve, reject) {
@@ -1120,7 +1125,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       }
       map.on('load', function () {
         // 地形必须在 style 就绪后再挂，否则 source 还没注册
-        if (cfg.dem) {
+        if (terrainOn) {
           try {
             map.setTerrain({ source: 'dem', exaggeration: cfg.terrainExaggeration });
           } catch (err) {
@@ -1635,6 +1640,14 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       getRouteCoords: function () { return routeCoords; },
       setRouteProgress: setRouteProgress,
       setFlowPhase: setFlowPhase,
+      // 自适应画质用：低帧率时把地形整层摘掉（MapLibre 没有更细的 LOD 旋钮）
+      setTerrainEnabled: function (on) {
+        terrainOn = !!on && !!cfg.dem;
+        try {
+          map.setTerrain(terrainOn ? { source: 'dem', exaggeration: cfg.terrainExaggeration } : null);
+        } catch (err) { /* ignore */ }
+      },
+      isTerrainOn: function () { return terrainOn; },
       setRouteVisible: function (v) {
         paint('route-base', 'line-opacity', v);
         paint('route-glow', 'line-opacity', v * 0.55);
@@ -1758,6 +1771,59 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     var clouds = Array.prototype.slice.call(document.querySelectorAll('.cloud'));
     var drawP = 0;   // 航线绘制进度，ticker 里用来每帧重算彗星头位置
 
+    /* --------------------------- 自适应画质 --------------------------- */
+    // 软件渲染（SwiftShader）/ 低端集显上，3D 地形与 6 层全屏云是两块最贵的开销。
+    // 片头 2.5–4.5s 用真实 rAF 帧率采样一次，低于阈值就当场降档，
+    // 而不是把整段开场删掉。实测这台软件渲染机：全开 19fps、关地形 89fps，
+    // 所以 30fps 以下先把地形摘掉，18fps 以下再减云层、停航线流光。
+    function applyQuality(level, fps) {
+      CI.perf = {
+        fps: Math.round(fps * 10) / 10,
+        level: level,
+        sampledAt: Math.round(performance.now())
+      };
+      document.documentElement.setAttribute('data-ci-quality', level);
+      if (level === 'full') return;
+
+      // 地形是这块最贵的：实测软件渲染下 19fps → 关掉后 89fps
+      scene.setTerrainEnabled(false);
+      // 云层只在最差档减（6 层全屏叠图），且保留 2 层，避免穿云段整段消失
+      if (level === 'minimal') {
+        clouds.forEach(function (el, i) { if (i >= 2) el.style.display = 'none'; });
+        // 每帧改 paint 属性的航线流光也一起停掉；彗星头保住最后位置会像卡住，直接藏起
+        if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
+        if (headEl) headEl.style.opacity = 0;
+      }
+    }
+
+    function watchQuality() {
+      if (!cfg.adaptive) return;
+      // 前 2.5 秒是航线爬升（瓦片少），不能代表俯冲段的真实开销；
+      // 取 2.5–4.5s，含坠落开头，采样完在 4.5s 降档，余下的坠落与落位就顺了。
+      var frames = 0;
+      var t0 = performance.now();
+      var sampling = false;
+      function tick() {
+        var now = performance.now();
+        if (!sampling) {
+          if (now - t0 < 2500) return;
+          sampling = true;
+          frames = 0;
+          t0 = now;
+          return;
+        }
+        frames += 1;
+        var dt = now - t0;
+        if (dt < 2000) return;
+        gsap.ticker.remove(tick);
+        var fps = frames / (dt / 1000);
+        if (fps < 18) applyQuality('minimal', fps);
+        else if (fps < 30) applyQuality('lite', fps);
+        else applyQuality('full', fps);
+      }
+      gsap.ticker.add(tick);
+    }
+
     /* ------------------------------- 相机 ------------------------------- */
     function applyCam() {
       map.jumpTo({
@@ -1870,12 +1936,14 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         t.to(ex, {
           v: cfg.terrainExaggeration * 1.45, duration: fallDur, ease: 'power2.in',
           onUpdate: function () {
+            if (!scene.isTerrainOn()) return;
             try { map.setTerrain({ source: 'dem', exaggeration: ex.v }); } catch (e) { /* ignore */ }
           }
         }, T.fall[0]);
         t.to(ex, {
           v: cfg.terrainExaggeration, duration: settleDur, ease: 'power2.out',
           onUpdate: function () {
+            if (!scene.isTerrainOn()) return;
             try { map.setTerrain({ source: 'dem', exaggeration: ex.v }); } catch (e) { /* ignore */ }
           }
         }, T.settle[0]);
@@ -1954,7 +2022,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       cam.lng = fc.center.lng; cam.lat = fc.center.lat;
       cam.zoom = fc.zoom; cam.pitch = fc.pitch; cam.bearing = fc.bearing;
       applyCam();
-      if (cfg.dem) {
+      if (cfg.dem && scene.isTerrainOn()) {
         try { map.setTerrain({ source: 'dem', exaggeration: cfg.terrainExaggeration }); } catch (e) { /* ignore */ }
       }
 
@@ -1996,6 +2064,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         return;
       }
       disableInteractions();
+      watchQuality();
       tl = build();
       tl.timeScale(cfg.speed || 1);
       flowTick = flowLoop;
@@ -2344,7 +2413,13 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
   /* ------------------------------- 启动 ------------------------------- */
   function boot() {
     fillHud();
-    paintClouds();
+    // clouds=0 时连贴图都不用生成；软件渲染下这 6 层全屏叠图是主要开销之一
+    if (cfg.clouds) {
+      paintClouds();
+    } else {
+      var cloudBox = document.getElementById('clouds');
+      if (cloudBox) cloudBox.style.display = 'none';
+    }
 
     var loader = document.getElementById('loader');
     var fatal = document.getElementById('fatal');

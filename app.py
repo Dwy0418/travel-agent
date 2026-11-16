@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date, timedelta
@@ -2369,12 +2370,14 @@ div[data-baseweb="popover"] div[data-baseweb="calendar"] div[role="button"]:hove
    输入卡高度不是固定的：带聊天记录时（对话回看 172px）会涨到约 300px，
    写死 224px 会把长表格的最后一段压在卡片底下。--ci-composer-h 由
    _embed_layout_sync() 里的 ResizeObserver 实时写到 <html> 上，
-   拿不到时退回 224px（空态实测 168px + 56px 余量）。 */
-div[data-testid="stMainBlockContainer"] {
+   拿不到时退回 224px（空态实测 168px + 56px 余量）。
+   详情页 / 卡片弹窗不再渲染 composer：用 :has 把规则限定在卡真存在时，
+   否则 --ci-composer-h 的残留值会在页面底部留出 300px 以上的空洞。 */
+div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
     padding-bottom: calc(var(--ci-composer-h, 224px) + 16px) !important;
 }
 @media (max-width: 560px) {
-    div[data-testid="stMainBlockContainer"] {
+    div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
         padding-bottom: calc(var(--ci-composer-h, 264px) + 16px) !important;
     }
 }
@@ -2552,6 +2555,62 @@ div[data-testid="stMainBlockContainer"] {
     .ci-plan-dot,
     .ci-plan-fill::after,
     .ci-plan-step.is-live .ci-plan-mark { animation: none; }
+}
+/* 「取消规划」是真实 Streamlit 按钮：规划跑在后台线程，主线程接收这次点击
+   后立刻 rerun 回首页，不用等 run() 结束。按钮绝对定位到卡片右上角。 */
+.st-key-ci_plan_wrap {
+    position: relative;
+    max-width: 760px;
+    margin-inline: auto;
+}
+.st-key-ci_plan_wrap .ci-plan-card {
+    max-width: none;
+    margin-top: 0;
+}
+.st-key-ci_plan_wrap [data-testid="stButton"] {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    width: auto;
+    z-index: 6;
+}
+.st-key-ci_plan_wrap [data-testid="stButton"] > button {
+    min-height: 28px;
+    height: 28px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    color: #CBD5E1;
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.32);
+    border-radius: 999px;
+    box-shadow: none;
+}
+.st-key-ci_plan_wrap [data-testid="stButton"] > button:hover {
+    color: #FFFFFF;
+    border-color: rgba(248, 113, 113, 0.6);
+    background: rgba(127, 29, 29, 0.55);
+}
+.st-key-ci_plan_wrap [data-testid="stButton"] > button:focus {
+    box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35);
+}
+/* 右上角的取消按钮让出位置，秒表不会被压住 */
+.ci-plan-top {
+    padding-right: 104px;
+}
+/* 结果详情页左上角的返回：紧凑胶囊，不用整行宽按钮 */
+.st-key-result_home [data-testid="stButton"] > button {
+    width: auto;
+    min-height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
+    color: #CBD5E1;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+}
+.st-key-result_home [data-testid="stButton"] > button:hover {
+    color: #FFFFFF;
+    border-color: rgba(148, 190, 240, 0.55);
 }
 
 /* 详情弹窗：图集两列、视频 16:9，宽屏时并排 */
@@ -3310,9 +3369,14 @@ def _plan_ticker_html(run_id: str) -> str:
 """
 
 
-def _embed_plan_ticker() -> None:
-    """把秒表脚本塞进 1px iframe（st.iframe 允许同源脚本；老版本退回 components）。"""
-    run_id = str(time.time_ns())
+def _embed_plan_ticker(run_id: str | None = None) -> None:
+    """把秒表脚本塞进 1px iframe（st.iframe 允许同源脚本；老版本退回 components）。
+
+    run_id 由 _PlanJob 固定：后台任务期间主脚本每 0.8s 轮询重绘一次卡片，
+    若每轮都换 id，前端秒表会被反复清零。
+    """
+    if run_id is None:
+        run_id = str(time.time_ns())
     html = "<html><body style='margin:0'>" + _plan_ticker_html(run_id) + "</body></html>"
     frame = getattr(st, "iframe", None)
     if callable(frame):
@@ -3705,10 +3769,10 @@ def _render_detail(preset: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    # 弹窗自带的 ✕ 太小，明确给一个「返回」：清掉标记重跑一轮，弹窗就不再被打开。
-    if full_width_button("← 返回卡片列表", key="detail_back"):
-        st.session_state["_open_detail"] = ""
-        st.rerun()
+    # 弹窗自带的 ✕ 太小，明确给一个「返回首页」：清掉行程数据重跑一轮，
+    # 弹窗不再被打开，页面回到首页空态。key 沿用 detail_back，既有用例仍能点。
+    if full_width_button("← 返回首页", key="detail_back"):
+        _go_home()
 
     # 出发地要先实例化再读值：同一轮里读到的是刚选中的那个，片头的航线才画得对。
     ocol, _bcol = st.columns([1, 2.2], gap="small")
@@ -4016,7 +4080,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
 
     payload 除 Agent 需要的 8 个字段外，另附 country / province /
     preferences_list / preferences_note 等纯 UI 字段用于回填；
-    run_agent() 会裁掉它们，保证送给 Agent 的仍是原来那 8 个。
+    _PlanJob 会用 agent_payload() 裁掉它们，保证送给 Agent 的仍是原来那 8 个。
     """
     base: dict[str, Any] = dict(CONSTRAINT_DEFAULTS)
     if seed:
@@ -4788,47 +4852,116 @@ def _plan_progress_html(done: set[int], live: str, elapsed: float) -> str:
     )
 
 
-def run_agent(request: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """执行规划，并把真实阶段实时画成进度卡。
+class _PlanJob:
+    """一次后台规划任务。
 
-    trace_callback 在 Agent 主线程里逐条触发（预取的线程池要等结果回传后才 trace，
-    不会跨线程碰 Streamlit）：geocode / search_poi / get_weather / plan_route /
-    校验 / 预算，每条都对得上卡上的一行，进度条随之推进。两段阶段之间的空档
-    由前端秒表和轮播提示撑着，不靠匀速假进度。
-    无论成功还是失败都清掉卡片：成功让位给片头，失败让位给 _plan 的错误提示。
+    线程里只写普通属性（result / error / done / live），所有 st 调用都留在
+    主脚本线程。这样进度卡和「取消规划」按钮始终能被 Streamlit 处理，不用
+    等 run() 跑完才有响应。
     """
-    payload = agent_payload(payload)
-    done: set[int] = set()
-    live = ""
-    started = time.monotonic()
-    card = st.empty()
 
-    def render() -> None:
-        card.markdown(
-            _plan_progress_html(done, live, time.monotonic() - started),
-            unsafe_allow_html=True,
-        )
+    def __init__(self, request: str, payload: dict[str, Any]) -> None:
+        self.request = request
+        self.payload = agent_payload(payload)
+        self.started = time.monotonic()
+        self.run_id = str(time.time_ns())
+        self.done: set[int] = set()
+        self.live = ""
+        self.result: dict[str, Any] | None = None
+        self.error: BaseException | None = None
+        self.finished = threading.Event()
+        self.cancelled = threading.Event()
+        self._thread: threading.Thread | None = None
 
-    def on_trace(entry: dict[str, Any]) -> None:
-        nonlocal live
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def on_trace(self, entry: dict[str, Any]) -> None:
         line = _plan_live_line(entry)
         if line:
-            live = line
+            self.live = line
         stage = _plan_stage_of(entry)
         if stage is not None:
-            # 走到后面的阶段说明前面的也真的做完了：一起打勾，避免出现
-            # 「复核已完成、编排还在转」这种倒序观感。
-            done.update(range(stage + 1))
-        render()
+            # 走到后面的阶段说明前面的也真的做完了：一起打勾，避免倒序观感。
+            self.done.update(range(stage + 1))
 
-    render()
-    _embed_plan_ticker()
-    try:
-        engine = agent.TravelAgent(trace_callback=on_trace)
-        result = engine.run(request, payload)
-    finally:
-        card.empty()
-    return result
+    def start(self) -> None:
+        def work() -> None:
+            try:
+                engine = agent.TravelAgent(
+                    trace_callback=self.on_trace,
+                    cancelled=self.cancelled.is_set,
+                )
+                self.result = engine.run(self.request, self.payload)
+            except BaseException as exc:  # noqa: BLE001 - 异常交给主线程展示
+                self.error = exc
+            finally:
+                self.finished.set()
+
+        self._thread = threading.Thread(target=work, daemon=True)
+        self._thread.start()
+
+
+def _go_home() -> None:
+    """清空本次行程数据，回到首页空态。"""
+    for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def _start_plan(request: str, payload: dict[str, Any]) -> bool:
+    """开一个后台规划任务；城市没填好就留在首页提示，不建任务。"""
+    if not str(payload.get("city") or "").strip():
+        st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
+        return False
+    job = _PlanJob(request, payload)
+    job.start()
+    st.session_state["_agent_job"] = job
+    return True
+
+
+def _finish_plan_job(job: _PlanJob) -> None:
+    """后台任务收尾：成功落到 result，失败转成首页上的一句错误。"""
+    st.session_state.pop("_agent_job", None)
+    if job.error is not None:
+        if isinstance(job.error, agent.AgentCancelled):
+            return
+        if isinstance(job.error, agent.AgentError):
+            st.session_state["_plan_error"] = f"这次没能规划成功：{zh_labels.friendly_error(job.error)}"
+        else:
+            st.session_state["_plan_error"] = "出了点小状况，请稍后再试一次。"
+        return
+    result = job.result or {}
+    st.session_state["result"] = result
+    # 只有「真的跑完一次规划」才放行片头；失败时不播，避免先开场再落进空详情页。
+    if (result.get("itinerary") or {}).get("days"):
+        st.session_state["_intro_pending"] = True
+
+
+def _render_plan_job(job: _PlanJob) -> None:
+    """等待期的整屏：进度卡 + 取消按钮，靠主脚本轮询刷新真实阶段。
+
+    取消是普通控件点击：主线程没被 run() 占着，这一下 rerun 立刻生效，
+    回到首页空态；后台那一趟在下一个轮次安全点自行结束、结果丢弃。
+    """
+    inject_css()
+    with st.container(key="ci_plan_wrap"):
+        st.markdown(
+            _plan_progress_html(job.done, job.live, job.elapsed()),
+            unsafe_allow_html=True,
+        )
+        if st.button("取消规划", key="ci_plan_cancel"):
+            job.cancelled.set()
+            for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+                st.session_state.pop(key, None)
+            st.session_state.pop("_agent_job", None)
+            st.rerun()
+    _embed_plan_ticker(job.run_id)
+    if job.finished.is_set():
+        _finish_plan_job(job)
+        st.rerun()
+    time.sleep(0.6)
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -5339,6 +5472,10 @@ def show_result(result: dict[str, Any]) -> None:
     itinerary = result["itinerary"]
     days = itinerary.get("days") or []
 
+    # 详情页左上角：清掉这次行程直接回首页空态
+    if st.button("← 返回首页", key="result_home"):
+        _go_home()
+
     # 冲突自动重排：营业时间撞车时自行顺延，不向用户报错
     soften_notes = reschedule_conflicts(days)
 
@@ -5387,24 +5524,6 @@ def show_result(result: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
-def _plan(request: str, payload: dict[str, Any]) -> None:
-    """跑一次规划并落到 session_state，任何失败都在界面层兜住，避免白屏。"""
-    if not str(payload.get("city") or "").strip():
-        st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
-        return
-    try:
-        result = run_agent(request, payload)
-        st.session_state["result"] = result
-        # 只有「真的跑完一次规划」才放行片头；浏览详情页、换筛选条件都不会碰这个标记。
-        # 规划失败（没产出可展示的行程）时不放片头：否则会先播一段开场，再落进空详情页。
-        if (result.get("itinerary") or {}).get("days"):
-            st.session_state["_intro_pending"] = True
-    except agent.AgentError as exc:
-        st.error(f"这次没能规划成功：{zh_labels.friendly_error(exc)}")
-    except Exception:  # noqa: BLE001 - 界面层兜底，避免白屏
-        st.error("出了点小状况，请稍后再试一次。")
-
-
 def _intro_pois(result: dict[str, Any]) -> list[dict[str, Any]]:
     """把 itinerary.days 里的「游玩」条目拍平成片头要的 POI 列表。
 
@@ -5488,6 +5607,13 @@ def main() -> None:
     apply_pending_preset()
     apply_pending_chat()
 
+    # 后台规划任务进行中：进度卡独占一屏。主线程不被 run() 占住，
+    # 「取消规划」点一下就是一次正常 rerun，用户不用等后台请求跑完。
+    job = st.session_state.get("_agent_job")
+    if job is not None:
+        _render_plan_job(job)
+        st.stop()
+
     # 全局 Header 已下线：品牌名收进空状态页，避免顶部黑边与强制标题
     missing = config.require_keys()
     if missing:
@@ -5512,7 +5638,12 @@ def main() -> None:
         st.session_state.pop("result", None)
         # 开跑了就别让详情弹窗压在进度上
         st.session_state["_open_detail"] = ""
-        _plan(str(rerun_request) if rerun_request is not None else payload["request"], payload)
+        if _start_plan(str(rerun_request) if rerun_request is not None else payload["request"], payload):
+            st.rerun()
+
+    plan_error = st.session_state.pop("_plan_error", None)
+    if plan_error:
+        st.error(plan_error)
 
     result = st.session_state.get("result")
     if not result:
@@ -5524,11 +5655,12 @@ def main() -> None:
             st.stop()
         show_result(result)
 
-    # 输入卡放在最后：主区里的 chat_input 由 Streamlit 钉在视口底部，
-    # 点击与提交都只写标记 + rerun，规划在下一轮顶部执行一次。
-    render_composer()
-    # 输入卡高度会随聊天记录变化，主区底部留白跟着它走
-    _embed_layout_sync()
+    # 输入卡只属于首页：结果详情页 / 卡片详情弹窗都不渲染它（不是 display:none）。
+    detail_open = bool(str(st.session_state.get("_open_detail") or ""))
+    if not result and not detail_open:
+        render_composer()
+        # 输入卡高度会随聊天记录变化，主区底部留白跟着它走
+        _embed_layout_sync()
 
     # 详情弹窗最后打开：它压在整页之上，前面该回填的条件这轮都已经落好。
     render_open_detail()
