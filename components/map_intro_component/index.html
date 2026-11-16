@@ -205,6 +205,35 @@ button { font-family: inherit; }
 }
 #skip-btn.is-hidden { opacity: 0 !important; transform: translateY(8px); pointer-events: none; }
 
+/* ---------------------- 落位后的「下一步」+ 提示 ----------------------
+ * 时间轴播完不自动跳详情，镜头停在落位相机上，右下角换成这个主按钮；
+ * 只有点它才回传 intro:done(reason=next)。提示条比坞舱轻，不压地图。
+ */
+#next-btn {
+  position: absolute; z-index: 14; right: 26px; bottom: calc(var(--bar) + 20px);
+  display: flex; align-items: center; gap: 8px; padding: 12px 20px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; color: #fff;
+  background: linear-gradient(135deg, #ff3b4c, #d2102a);
+  border: 1px solid rgba(255, 140, 148, 0.6); border-radius: 999px; cursor: pointer;
+  box-shadow: 0 10px 30px rgba(210, 16, 42, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.25) inset;
+  opacity: 0; transform: translateY(10px); pointer-events: none;
+  transition: opacity 0.45s var(--ease), transform 0.45s var(--ease), box-shadow 0.2s, filter 0.2s;
+}
+#next-btn.is-on { opacity: 1; transform: none; pointer-events: auto; }
+#next-btn:hover { filter: brightness(1.08); box-shadow: 0 12px 36px rgba(255, 60, 76, 0.55); }
+#next-btn:active { transform: translateY(1px); }
+
+#map-hint {
+  position: absolute; z-index: 11; left: 50%; bottom: calc(var(--bar) + 24px);
+  transform: translate(-50%, 8px);
+  padding: 6px 14px; border-radius: 999px;
+  font-size: 11px; letter-spacing: 0.1em; color: rgba(255, 255, 255, 0.66);
+  background: rgba(8, 10, 16, 0.4); border: 1px solid rgba(255, 255, 255, 0.13);
+  backdrop-filter: blur(8px); white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity 0.6s var(--ease), transform 0.6s var(--ease);
+}
+#map-hint.is-on { opacity: 1; transform: translate(-50%, 0); }
+
 /* ---------------------------- 城市针 ----------------------------
  * 外层 element 由 MapLibre 写内联 opacity（地形遮挡），所以闸门用 visibility，
  * 视觉动画放在内层 .cp-box 上。
@@ -401,6 +430,8 @@ button { font-family: inherit; }
   #dock { left: 16px; bottom: calc(var(--bar) + 14px); }
   .dock-item { padding: 6px 10px 6px 7px; }
   #skip-btn { right: 14px; bottom: calc(var(--bar) + 12px); }
+  #next-btn { right: 14px; bottom: calc(var(--bar) + 12px); padding: 10px 16px; font-size: 11.5px; }
+  #map-hint { font-size: 10px; padding: 5px 10px; bottom: calc(var(--bar) + 70px); }
   #poi-card { width: 300px; }
   #captions .caption { font-size: 11px; letter-spacing: 0.12em; }
 }
@@ -471,8 +502,12 @@ button { font-family: inherit; }
       <div id="dock-list"></div>
     </div>
 
-    <!-- z13：跳过片头 -->
+    <!-- z13：跳过片头（只在动画播放中可见） -->
     <button id="skip-btn" type="button">跳过片头 <kbd>ESC</kbd></button>
+
+    <!-- z13b：落位后的「下一步」。时间轴播完只停在地图，只有点它才进详情 -->
+    <button id="next-btn" type="button">下一步：查看完整行程详情 <span aria-hidden="true">→</span></button>
+    <div id="map-hint">点击地图上的标记可查看景点详情</div>
 
     <!-- z14：POI 卡片 -->
     <div id="poi-card">
@@ -1761,6 +1796,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       zoom: C.start.zoom, pitch: C.start.pitch, bearing: C.start.bearing
     };
     var finished = false;
+    var landed = false;
     var started = false;
     var flowActive = false;
     var tl = null;
@@ -1870,7 +1906,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       var t = gsap.timeline({
         paused: true,
         defaults: { ease: 'power2.inOut' },
-        onComplete: function () { finish('complete'); }
+        onComplete: function () { land(); }
       });
 
       // 幕布：黑场退场 + HUD / 字幕条入场
@@ -2018,6 +2054,44 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       if (tl) tl.kill();
       if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
 
+      settleVisual();
+
+      ui.skip.classList.add('is-hidden');
+      if (ui.next) ui.next.classList.remove('is-on');
+      if (ui.hint) ui.hint.classList.remove('is-on');
+      enableInteractions();
+
+      CI.host && CI.host.emit('intro:done', { reason: reason });
+      document.body.classList.add('intro-finished');
+    }
+
+    /* ------------------------- 落位：播完但不完成 -------------------------
+     * 时间轴走完只把镜头定格在落位相机上，地界红框 / Marker / 坞舱全部保留，
+     * 进入 map_interaction 终态；不发 intro:done，父页因此不会 rerun，
+     * iframe 也就不会被卸载。之后地图可以自由平移缩放、Marker 可点，
+     * 直到用户自己点「下一步」才 finish('next')。
+     */
+    function land() {
+      if (finished || landed) return;
+      landed = true;
+      if (tl) tl.kill();
+      if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
+
+      settleVisual();
+
+      ui.skip.classList.add('is-hidden');
+      ui.captions.forEach(function (el) { el.classList.remove('is-on'); });
+      if (ui.next) ui.next.classList.add('is-on');
+      if (ui.hint) ui.hint.classList.add('is-on');
+      enableInteractions();
+
+      document.body.classList.add('intro-landed');
+      CI.perf = CI.perf || {};
+      CI.perf.landedAt = Math.round(performance.now());
+    }
+
+    /* 落位/完成共用的收尾：相机、图层、呼吸、坞舱都在这里落定 */
+    function settleVisual() {
       var fc = scene.finalCamera();
       cam.lng = fc.center.lng; cam.lat = fc.center.lat;
       cam.zoom = fc.zoom; cam.pitch = fc.pitch; cam.bearing = fc.bearing;
@@ -2044,12 +2118,8 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       startBreathing();
       caption(2);
       ui.dock.classList.add('is-on');
-      ui.skip.classList.add('is-hidden');
-      enableInteractions();
-
-      CI.host && CI.host.emit('intro:done', { reason: reason });
-      document.body.classList.add('intro-finished');
     }
+
 
     /* ------------------------------- 播放 ------------------------------- */
     function play() {
@@ -2073,8 +2143,14 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     }
 
     function skip() {
-      if (finished) return;
+      // 落位之后「跳过片头」已经隐藏，这里不再接受跳过：控制权交给「下一步」
+      if (finished || landed) return;
       finish('skip');
+    }
+
+    function next() {
+      if (finished || !landed) return;
+      finish('next');
     }
 
     function replay() {
@@ -2085,8 +2161,16 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     return {
       play: play,
       skip: skip,
+      next: next,
       replay: replay,
       isFinished: function () { return finished; },
+      isLanded: function () { return landed; },
+      canSkip: function () { return !finished && !landed; },
+      state: function () {
+        if (finished) return 'done';
+        if (landed) return 'map_interaction';
+        return started ? 'playing' : 'idle';
+      },
       camera: cam,
       // 调试用：拿到 tl 才能看 playhead / timeScale
       timeline: function () { return tl; }
@@ -2449,6 +2533,8 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
           flash: document.getElementById('flash'),
           speedlines: document.getElementById('speedlines'),
           skip: document.getElementById('skip-btn'),
+          next: document.getElementById('next-btn'),
+          hint: document.getElementById('map-hint'),
           progress: document.getElementById('progress-fill'),
           dock: document.getElementById('dock'),
           routeHead: document.getElementById('route-head'),
@@ -2470,8 +2556,14 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
           e.stopPropagation();
           cinematic.skip();
         });
+        // 落位后唯一的出口：点一下才回传 intro:done(reason=next) 进详情
+        document.getElementById('next-btn').addEventListener('click', function (e) {
+          e.stopPropagation();
+          cinematic.next();
+        });
         document.addEventListener('keydown', function (e) {
-          if ((e.key === 'Escape' || e.key === 'Esc') && !cinematic.isFinished()) cinematic.skip();
+          // ESC 只是「跳过片头」的快捷键；停在地图之后不再有捷径，必须点「下一步」
+          if ((e.key === 'Escape' || e.key === 'Esc') && cinematic.canSkip()) cinematic.skip();
         });
 
         // 坞舱：点地点 → 打开卡片 + 轻推镜头
