@@ -73,6 +73,10 @@ class AgentError(RuntimeError):
     """面向用户的、可直接展示的错误。"""
 
 
+class AgentCancelled(AgentError):
+    """用户在规划途中取消：run() 在轮次安全点提前返回，结果直接丢弃。"""
+
+
 def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     """把界面/命令行输入整理成结构化用户约束（含默认值）。"""
     raw = raw or {}
@@ -134,9 +138,13 @@ class TravelAgent:
         self,
         trace_callback: Callable[[dict[str, Any]], None] | None = None,
         chat: Callable[..., tuple[dict[str, Any], dict[str, Any]]] = llm.chat,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.trace_callback = trace_callback
         self._chat = chat
+        # 取消只在轮次边界生效：已经飞出去的 HTTP 请求收不回来，
+        # 能省的是它之后的编排 / 校验 / 重排轮次。
+        self._cancelled = cancelled or (lambda: False)
         self.state: dict[str, Any] = {}
         self.round_no = 0
 
@@ -154,6 +162,15 @@ class TravelAgent:
                 self.trace_callback(entry)
             except Exception:  # noqa: BLE001 - 回调异常不影响主流程
                 pass
+
+    def _check_cancelled(self) -> None:
+        """轮次安全点：用户点了取消就直接抛出去，不再发起下一轮调用。
+
+        注意边界：当前正在跑的那一次 LLM / 工具请求没法中断（Streamlit
+        关不掉已经发出的服务端 HTTP），这里只是保证它之后的轮次不再发生。
+        """
+        if self._cancelled():
+            raise AgentCancelled("用户已取消本次规划")
 
     def _flush_cache_summary(self) -> None:
         """缓存命中不逐条刷屏，每轮汇总一句。"""
@@ -591,6 +608,7 @@ class TravelAgent:
         )
         self._seed_city(c)
         self._prefetch(c)
+        self._check_cancelled()
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -605,6 +623,7 @@ class TravelAgent:
         for round_no in range(1, config.MAX_ITERATIONS + 1):
             iterations = round_no
             self.round_no = round_no
+            self._check_cancelled()
             message = self._call_llm(messages)
             tool_calls = message.get("tool_calls") or []
 
@@ -630,6 +649,7 @@ class TravelAgent:
                         }
                     )
                 self._flush_cache_summary()
+                self._check_cancelled()
                 continue
 
             text = message.get("content") or ""

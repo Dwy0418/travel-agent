@@ -4902,8 +4902,30 @@ class _PlanJob:
         self._thread.start()
 
 
+def _snapshot_form() -> None:
+    """取消 / 返回首页时把表单条件留给下一轮控件初始化。
+
+    规划、片头、详情页都不渲染 composer，Streamlit 会把 f_* 的控件状态当成
+    过期控件回收，回首页时表单会变回默认值。这里用 _pending_constraints 把
+    开跑时那份 payload 写回去，用户不用重新填一遍城市和日期。
+    """
+    last = st.session_state.get("_last_payload")
+    if last:
+        seed = dict(last)
+        # _payload_from_state 里的 end 是 ISO 字符串，而 f_end 背后是 date_input，
+        # 直接把字符串塞进 session_state 会让控件在下一轮抛类型错误。
+        end = seed.get("end")
+        if isinstance(end, str):
+            try:
+                seed["end"] = date.fromisoformat(end)
+            except ValueError:
+                seed.pop("end", None)
+        st.session_state["_pending_constraints"] = seed
+
+
 def _go_home() -> None:
     """清空本次行程数据，回到首页空态。"""
+    _snapshot_form()
     for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
         st.session_state.pop(key, None)
     st.rerun()
@@ -4914,6 +4936,7 @@ def _start_plan(request: str, payload: dict[str, Any]) -> bool:
     if not str(payload.get("city") or "").strip():
         st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
         return False
+    st.session_state["_last_payload"] = dict(payload)
     job = _PlanJob(request, payload)
     job.start()
     st.session_state["_agent_job"] = job
@@ -4924,7 +4947,10 @@ def _finish_plan_job(job: _PlanJob) -> None:
     """后台任务收尾：成功落到 result，失败转成首页上的一句错误。"""
     st.session_state.pop("_agent_job", None)
     if job.error is not None:
-        if isinstance(job.error, agent.AgentCancelled):
+        # 版本错位兜底：app.py 先上线、agent.py 还没跟上时，agent 模块里
+        # 可能没有 AgentCancelled。这里用 getattr 退回「非取消」，让界面落到
+        # 普通错误文案，而不是 isinstance 直接 AttributeError 整页崩红。
+        if isinstance(job.error, getattr(agent, "AgentCancelled", ())):
             return
         if isinstance(job.error, agent.AgentError):
             st.session_state["_plan_error"] = f"这次没能规划成功：{zh_labels.friendly_error(job.error)}"
@@ -4952,6 +4978,7 @@ def _render_plan_job(job: _PlanJob) -> None:
         )
         if st.button("取消规划", key="ci_plan_cancel"):
             job.cancelled.set()
+            _snapshot_form()
             for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
                 st.session_state.pop(key, None)
             st.session_state.pop("_agent_job", None)
