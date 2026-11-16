@@ -3389,7 +3389,15 @@ def _plan_ticker_html(run_id: str) -> str:
     doc.removeEventListener('click', onHit, true);
   }};
   function alive() {{ return !!doc.querySelector('.ci-plan-card'); }}
+  // 背景层去重：首页和规划页在脚本里位置不同，Streamlit 不会回收首页那份
+  // .tv-bg，于是 DOM 里同时留着两层全屏背景（各自跑自己的图片轮播）。两层
+  // 相位不同，叠在一起就是背景不停闪。每 tick 只保留最上层（本轮渲染的这份）。
+  function dedupeBg() {{
+    var list = doc.querySelectorAll('.tv-bg');
+    for (var i = 0; i < list.length - 1; i++) list[i].remove();
+  }}
   function paint() {{
+    dedupeBg();
     if (!alive()) {{
       clearInterval(p.__ciPlanTimer);
       p.__ciPlanTimer = null;
