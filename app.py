@@ -2387,6 +2387,7 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
    同一套玻璃材质；进度条宽度只跟 trace 里真实完成的阶段数走，不按秒数推进，
    所以慢请求也不会跑满卡住；秒表是前端时钟，另有一句提示说明「这是估算」。 */
 .ci-plan-card {
+    position: relative;
     max-width: 760px;
     margin: clamp(2px, 1.2vh, 16px) auto 0;
     padding: 16px clamp(16px, 2vw, 24px) 14px;
@@ -2556,8 +2557,9 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
     .ci-plan-fill::after,
     .ci-plan-step.is-live .ci-plan-mark { animation: none; }
 }
-/* 「取消规划」是真实 Streamlit 按钮：规划跑在后台线程，主线程接收这次点击
-   后立刻 rerun 回首页，不用等 run() 结束。按钮绝对定位到卡片右上角。 */
+/* 「取消规划」：视觉上是卡片右上角的 HTML 胶囊，真实 Streamlit 按钮被隐藏，
+   只作为脚本点击的落点。之所以不直接给 st.button 绝对定位：st.container 的
+   DOM 在各版本里定位上下文不一致，实测会跑到卡片左侧并竖排折行。 */
 .st-key-ci_plan_wrap {
     position: relative;
     max-width: 760px;
@@ -2568,30 +2570,40 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
     margin-top: 0;
 }
 .st-key-ci_plan_wrap [data-testid="stButton"] {
-    position: absolute;
-    top: 10px;
-    right: 12px;
-    width: auto;
-    z-index: 6;
+    display: none;
 }
-.st-key-ci_plan_wrap [data-testid="stButton"] > button {
+.ci-plan-cancel {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 6;
     min-height: 28px;
-    height: 28px;
     padding: 0 12px;
+    font: inherit;
     font-size: 12.5px;
+    line-height: 26px;
     color: #CBD5E1;
     background: rgba(15, 23, 42, 0.72);
     border: 1px solid rgba(148, 163, 184, 0.32);
     border-radius: 999px;
-    box-shadow: none;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
-.st-key-ci_plan_wrap [data-testid="stButton"] > button:hover {
+.ci-plan-cancel:hover {
     color: #FFFFFF;
     border-color: rgba(248, 113, 113, 0.6);
     background: rgba(127, 29, 29, 0.55);
 }
-.st-key-ci_plan_wrap [data-testid="stButton"] > button:focus {
+.ci-plan-cancel:focus-visible {
+    outline: none;
     box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35);
+}
+/* 已经点下去等 rerun 的那零点几秒：给一句明确的「正在退出」，别让人觉得点空了 */
+.ci-plan-card.is-cancelled .ci-plan-cancel {
+    color: #FCA5A5;
+    border-color: rgba(248, 113, 113, 0.55);
+    cursor: default;
 }
 /* 右上角的取消按钮让出位置，秒表不会被压住 */
 .ci-plan-top {
@@ -3317,7 +3329,8 @@ def _embed_layout_sync() -> None:
 def _plan_ticker_html(run_id: str) -> str:
     """进度卡的秒表与提示轮播。
 
-    只做两件事：把 #ci-plan-elapsed 按前端时钟刷新、每 8 秒换一句提示。
+    只做三件事：把 #ci-plan-elapsed 按前端时钟刷新、每 8 秒换一句提示、
+    把卡片里那个 HTML 取消按钮的按下/点击转给被隐藏的真实 st.button。
     进度条宽度由服务端按真实阶段重绘，这里绝不碰——避免出现「匀速假进度」。
     每次规划带一个新的 run_id，父页面据此重置起点，不会沿用上一次的秒数；
     卡片被清掉后定时器自己停，不会在后面的页面上空转。
@@ -3338,6 +3351,43 @@ def _plan_ticker_html(run_id: str) -> str:
     p.__ciPlanStart = Date.now();
     p.__ciPlanHint = 0;
   }}
+  // 委托监听：每次 ticker 脚本执行都重绑一次，不能只绑一次。上一次规划的 iframe
+  // 被销毁时，浏览器会把挂在父文档上的监听一并回收，但全局标志还留在父窗口上，
+  // 新 iframe 若据此跳过绑定，取消按钮就会安静地失效（本地第二次规划实测）。
+  // 用 pointerdown 而不是 click：卡片每 0.6s 整块重绘，按下到抬起之间若赶上一次
+  // 重绘，节点被换掉后 click 会派发到共同祖先，绑 click 就会丢点击。
+  if (p.__ciCancelUnbind) {{
+    try {{ p.__ciCancelUnbind(); }} catch (e) {{}}
+  }}
+  var fire = function (hit) {{
+    if (!hit || hit.getAttribute('data-ci-fired') === '1') return;
+    hit.setAttribute('data-ci-fired', '1');
+    var card = doc.querySelector('.ci-plan-card');
+    if (card) card.classList.add('is-cancelled');
+    hit.textContent = '正在退出…';
+    hit.disabled = true;
+    var btn = doc.querySelector('.st-key-ci_plan_wrap [data-testid="stButton"] button')
+      || doc.querySelector('.st-key-ci_plan_wrap button');
+    if (btn) btn.click();
+  }};
+  var onDown = function (ev) {{
+    var node = ev.target;
+    if (node && node.closest) fire(node.closest('[data-ci-cancel]'));
+  }};
+  var onHit = function (ev) {{
+    var node = ev.target;
+    if (!node || !node.closest) return;
+    var hit = node.closest('[data-ci-cancel]');
+    if (!hit) return;
+    ev.preventDefault();
+    fire(hit);
+  }};
+  doc.addEventListener('pointerdown', onDown, true);
+  doc.addEventListener('click', onHit, true);
+  p.__ciCancelUnbind = function () {{
+    doc.removeEventListener('pointerdown', onDown, true);
+    doc.removeEventListener('click', onHit, true);
+  }};
   function alive() {{ return !!doc.querySelector('.ci-plan-card'); }}
   function paint() {{
     if (!alive()) {{
@@ -4842,6 +4892,8 @@ def _plan_progress_html(done: set[int], live: str, elapsed: float) -> str:
         "<div class='ci-plan-top'>"
         "<div class='ci-plan-title'><span class='ci-plan-dot'></span>正在为您规划行程</div>"
         f"<div class='ci-plan-clock'>已用 <b id='ci-plan-elapsed'>{elapsed:.1f}</b> 秒</div>"
+        # 视觉按钮在这里；点击由 ticker 脚本转给隐藏的真实 st.button
+        "<button type='button' class='ci-plan-cancel' data-ci-cancel='1'>取消规划</button>"
         "</div>"
         f"<div class='ci-plan-track'><span class='ci-plan-fill' style='width:{pct}%'></span></div>"
         "<div class='ci-plan-note'><span id='ci-plan-hint'>这一步通常最花时间，请稍候…</span>"
