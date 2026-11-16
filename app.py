@@ -4955,9 +4955,7 @@ def _finish_plan_job(job: _PlanJob) -> None:
         if isinstance(job.error, agent.AgentError):
             st.session_state["_plan_error"] = f"这次没能规划成功：{zh_labels.friendly_error(job.error)}"
         else:
-            # 临时诊断：线上异常被 Streamlit 脱敏，先回显类型名和短消息定位问题。
-            detail = f"{type(job.error).__name__}: {job.error}"[:160]
-            st.session_state["_plan_error"] = f"出了点小状况，请稍后再试一次。（{detail}）"
+            st.session_state["_plan_error"] = "出了点小状况，请稍后再试一次。"
         return
     result = job.result or {}
     st.session_state["result"] = result
