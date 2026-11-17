@@ -7,6 +7,8 @@
 
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- 显式声明深色方案：Chromium ForceDark 看到后不再给本 iframe 注入反色滤镜 -->
+  <meta name="color-scheme" content="dark" />
   <title>旅序 · 电影级开场 Prototype</title>
   <link rel="icon" href="data:," />
   <link rel="icon" href="data:," />
@@ -19,6 +21,8 @@
  * 分三层：地图 canvas（z0）/ 大气与云（z1-8）/ HUD 与卡片（z10+）
  * ========================================================================== */
 :root {
+  /* 与 <meta name="color-scheme"> 一致：声明深色，跳过 ForceDark 反色注入 */
+  color-scheme: dark;
   --red: #ff3547;
   --red-deep: #c81026;
   --paper: #f2ece3;

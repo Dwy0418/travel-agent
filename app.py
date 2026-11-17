@@ -937,6 +937,13 @@ def background_style_html() -> str:
 # ---------------------------------------------------------------------------
 GLOBAL_CSS = """
 <style>
+/* 0. 明确声明深色方案：页面本身就是深色，声明后 Chromium 的 ForceDark
+   （--enable-features=WebContentsForceDark，第三方壳常见）会判定页面已适配，
+   跳过对半透明层 / backdrop-filter 的反色注入，避免出现叠影。 */
+:root {
+    color-scheme: dark;
+}
+
 /* 1. 全局背景：交给下方「维度一」的主题背景统一接管，这里只定文字色 */
 .stApp {
     color: #E2E8F0;
