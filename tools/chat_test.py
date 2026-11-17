@@ -80,29 +80,47 @@ check(late > date.today(), "过去的日期顺延到下一年", str(late))
 # ---------------------------------------------------------------------------
 at = new_at()
 check(not at.sidebar, "侧栏真的没了，页面只剩一条主区")
-check("我是你的旅行管家" in texts(at), "输入卡上有管家标题")
-check("请用大白话描述你的出行计划" in texts(at), "管家只说一句副标题")
-check("直接用大白话说就行" not in texts(at), "示例文案不再重复第二遍（副标题里没有「比如」）")
+check("我是你的旅行管家" not in texts(at), "输入卡上不再有管家标题（按需求移除）")
+check("请用大白话描述你的出行计划" not in texts(at),
+      "副标题也移除，输入卡只剩精确设置 + 输入框 + 开始规划")
+check("已套用「" not in texts(at), "「已套用…」提示气泡不再渲染")
 check(any(sb.key == "f_country" for sb in at.selectbox), "『精确设置』里的级联下拉照样渲染（收起也在）")
 check(any(str(b.label) == "开始规划" for b in at.button), "『开始规划』还在，只是搬进了输入卡")
 
+cards_all, scope_all = A.pick_recommendations()
 btn_ct = len([b for b in at.button if str(b.key).startswith("preset_")])
-check(btn_ct == A.PAGE_SLOTS,
-      f"首屏只渲染 {A.PAGE_SLOTS} 张卡（另外两页不进 DOM）", str(btn_ct))
+check(btn_ct == len(cards_all) == len({p["key"] for p in cards_all}),
+      f"推荐池 {len(cards_all)} 张卡全部进 DOM（多页共存，不再只渲染第一页）", str(btn_ct))
+total_pages = -(-len(cards_all) // A.PAGE_SLOTS)
 heads = re.findall(r"<div class='pc-page'><span class='pc-page-no'>第 (\d+) / (\d+) 页</span>", texts(at))
-check(heads == [("1", str(A.PAGE_COUNT))], "页首只留一个页码行：当前页 / 总页数", str(heads))
+check(heads == [("1", str(total_pages))] and total_pages == 9,
+      "页码按 ceil(总数/8) 动态算：66 张 = 9 页", str(heads))
+last_page_ct = len(cards_all) - (total_pages - 1) * A.PAGE_SLOTS
+check(last_page_ct == 2, "末页只放余数 2 张，其余页各 8 个槽位", str(last_page_ct))
 check(not re.search(r"pc-pager|pc-pg-|pc-page-nav", "".join(texts(at))),
       "圆形数字分页器（pc-pager 胶囊）已删除")
-check(any(str(b.key) == "pc_prev" for b in at.button) and any(str(b.key) == "pc_next" for b in at.button),
-      "右上角保留上一页 / 下一页按钮")
+check(not any(str(b.key) in ("pc_prev", "pc_next") for b in at.button),
+      "右上角上一页 / 下一页按钮已移除")
 check(A._card_face(A.CITY_CARDS["北京市"][0], 8, 0).count("animation-delay:0ms") == 1,
       "错落延迟按页内算：第二页第一张不排队")
 
-# 分页改成服务端状态（_card_page）：每轮只渲染当前页，整页吸附随之退场
 snap_src = (ROOT / "app.py").read_text(encoding="utf-8")
-check("scroll-snap-type" not in snap_src, "整页吸附已摘掉，不再靠 snap 顶到页首")
-check('st.session_state["_card_page"]' in snap_src, "翻页状态落在 session_state 上")
-check("scrollTo({ top: 0" in snap_src, "翻页后把主滚动容器拉回页首")
+check("cards[page * PAGE_SLOTS: (page + 1) * PAGE_SLOTS]" in snap_src
+      and "for row_start in (0, 4)" in snap_src,
+      "每页按 8 个槽位切、两行各 4 张生成")
+check("scroll-snap-type: y mandatory" in snap_src
+      and "scroll-snap-align: start" in snap_src
+      and "height: 100dvh !important" in snap_src,
+      "整页吸附存在：100dvh + y mandatory + start")
+check("addEventListener('wheel'" in snap_src and "passive: false" in snap_src
+      and "locked = now + 800" in snap_src,
+      "滚轮监听 passive:false，切页后冻结 800ms")
+check("sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' })" in snap_src,
+      "滚轮一次只平滑跳到目标页，不会连飞两三页")
+check("root.classList.toggle('ci-last-page'" in snap_src
+      and "html.ci-last-page .st-key-composer" in snap_src
+      and "transform: translateY(calc(100% + 24px))" in snap_src,
+      "末页 IntersectionObserver 用 translateY 滑入输入卡，不改高度")
 grid_rules = "\n".join(re.findall(r":has\(\.pc-face\)[^{]*\{[^}]*\}", snap_src))
 check("repeat(6" not in grid_rules, "卡片网格列数只剩 8 的因数（1/2/4），末行不缺格")
 check("content-visibility" not in snap_src, "页外网格的 content-visibility 随三页同屏一起退场")
@@ -356,27 +374,58 @@ check(skip_bottom is not None and int(skip_bottom.group(1)) >= 56,
       "跳过按钮离底 ≥56px，不会被 Cloud 外壳的 Manage app 压住",
       f"bottom={skip_bottom.group(1) if skip_bottom else '无'}")
 
-at3 = new_at()
-d3 = next(str(b.key) for b in at3.button if str(b.key).startswith("detail_"))
-played = markdown_hits(at3, "<div class='dt-intro'", lambda: (at3.button(key=d3).click(), at3.run()))
-check(played == 1, "第一次打开详情只播一次启程片头", str(played))
-check("dt-intro" in texts(at3), "片头确实进了页面")
-check(any(str(b.key) == "intro_skip" for b in at3.button), "片头期间有「跳过片头」按钮")
-check(any(str(b.key) == "f_origin" for b in at3.selectbox), "详情页里能选出发地")
-again = markdown_hits(at3, "<div class='dt-intro'", lambda: at3.run())
-check(again == 0, "重跑一轮后片头不再挡正文（每张卡只播一次）", str(again))
+# 片头已改成 iframe 组件：Streamlit 只负责喂 payload / 收 intro:done，
+# 播放、落位、跳过都在组件内部，不再产生 dt-intro / intro_skip 页面节点。
+intro_result = {
+    "constraints": {"city": "成都市", "days": 2, "people": 2},
+    "itinerary": {"days": [{"day": 1, "items": [
+        {"type": "attraction", "name": "宽窄巷子", "lng": 104.055, "lat": 30.669,
+         "start": "09:00", "end": "11:30", "note": "老成都街巷",
+         "photos": ["https://example.com/a.jpg"]},
+        {"type": "meal", "name": "陈麻婆豆腐", "lng": 104.06, "lat": 30.67,
+         "start": "12:00", "end": "13:00"},
+    ]}]},
+}
+at_intro = new_at()
+at_intro.session_state["result"] = intro_result
+at_intro.session_state["_intro_pending"] = True
+at_intro.run()
+assert not at_intro.exception, at_intro.exception
+intro_nodes = [e for e in at_intro
+               if type(e).__name__ == "UnknownElement" and str(getattr(e, "key", "")) == "plan_intro"]
+check(len(intro_nodes) == 1, "规划完成后片头以 plan_intro iframe 组件出现（单实例）", str(len(intro_nodes)))
+check(not at_intro.session_state.get("_intro_pending"),
+      "片头只播一次：_intro_pending 在本轮被消费", str(at_intro.session_state.get("_intro_pending")))
+check(not any(str(b.key) == "intro_skip" for b in at_intro.button),
+      "跳过 / 下一步都在 iframe 内，不再渲染成 Streamlit 按钮")
 
-# 跳过之后弹窗还得开着，不能把详情一起关了
-at4 = new_at()
-d4 = next(str(b.key) for b in at4.button if str(b.key).startswith("detail_"))
-markdown_hits(at4, "<div class='dt-intro'", lambda: (at4.button(key=d4).click(), at4.run()))
-skipped = markdown_hits(at4, "<div class='dt-intro'", lambda: (at4.button(key="intro_skip").click(), at4.run()))
-check(skipped == 0, "点跳过片头不再重播", str(skipped))
-check("这趟适合谁" in texts(at4), "跳过之后详情正文照常开着")
-# 换出发地要重播：航线得跟着新的出发城市重画
-replayed = markdown_hits(at4, "<div class='dt-intro'", lambda: at4.selectbox(key="f_origin").set_value("乌鲁木齐市").run())
-check(replayed == 1, "换出发地会重播片头", str(replayed))
-check("从乌鲁木齐出发" in texts(at4), "重播的航线按新出发地画", str(at4.session_state.get("_intro_seen")))
+comp_src = (ROOT / "components/map_intro_component/index.html").read_text(encoding="utf-8")
+check("#next-btn.is-on" in comp_src and "intro-landed" in comp_src,
+      "落位后 next-btn 进入可点态（is-on + intro-landed）")
+check("CI.host && CI.host.emit('intro:done', { reason: reason });" in comp_src,
+      "下一步按钮 emit intro:done，而不是 Streamlit 按钮回调")
+
+# 回传：拿到 intro:done 才写 _intro_result，下一轮据此离开片头
+cap: dict = {}
+_real_intro_component = A.map_intro
+A.map_intro = lambda **kw: (cap.update(kw) or {"type": "intro:done", "reason": "next"})
+try:
+    A.st.session_state.clear()
+    event = A._play_intro(intro_result)
+    stored = A.st.session_state.get("_intro_result")
+finally:
+    A.map_intro = _real_intro_component
+payload = cap.get("payload") or {}
+check(cap.get("key") == "plan_intro" and payload.get("city") == "成都市"
+      and payload.get("days") == 2 and payload.get("people") == 2,
+      "iframe 拿到真实约束（成都 / 2 天 / 2 人）", str(cap.get("key")))
+check(len(payload.get("pois") or []) == 1
+      and payload["pois"][0]["name"] == "宽窄巷子"
+      and payload["pois"][0]["photos"] == ["https://example.com/a.jpg"],
+      "payload 只含 attraction（meal 被过滤），实拍图跟着点位进 iframe",
+      str([p.get("name") for p in payload.get("pois") or []]))
+check(event == {"type": "intro:done", "reason": "next"} and stored == event,
+      "intro:done 回传后写进 _intro_result，下一轮才离开片头", str(stored))
 
 # 卡片正面必须自带「几天几晚 + 价格」，否则挑起来心里没底
 face = A._card_face(card, 0)
