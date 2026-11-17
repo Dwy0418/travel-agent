@@ -3695,6 +3695,9 @@ def render_empty_state() -> None:
         + _cover_preload_html(first_page),
         unsafe_allow_html=True,
     )
+    # 预载哨兵之后、66 张卡之前注入全局样式：
+    # 否则卡片会先按自动高度摊开（一屏看到多页），再被 100dvh 顶回去。
+    inject_css()
     # 第一页的图走 CSS 保证首屏即出；其余页由脚本按 data-bg 懒加载
     st.markdown(_card_photo_css(first_page), unsafe_allow_html=True)
     # 页码浮在左上角，随滚动实时更新；不参与任何一页的排版
@@ -6038,11 +6041,9 @@ def main() -> None:
     result = st.session_state.get("result")
     css_done = False
     if not result:
-        # 首页 66 张卡要一次性进 DOM，样式必须先到：否则滚动脚本跑在样式之前，
-        # 9 页会先按自动高度摊开（一屏能看到 12 张卡），再被 100dvh 吸附顶回去。
-        inject_css()
-        css_done = True
         render_empty_state()
+        # 首页的样式由 render_empty_state() 在预载哨兵之后注入，这里不再重复
+        css_done = True
     else:
         if st.session_state.pop("_intro_pending", False):
             # 片头独占一屏：先播，回传后再 rerun 走到下面的 show_result
