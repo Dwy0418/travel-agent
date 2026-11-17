@@ -6036,7 +6036,12 @@ def main() -> None:
         st.error(plan_error)
 
     result = st.session_state.get("result")
+    css_done = False
     if not result:
+        # 首页 66 张卡要一次性进 DOM，样式必须先到：否则滚动脚本跑在样式之前，
+        # 9 页会先按自动高度摊开（一屏能看到 12 张卡），再被 100dvh 吸附顶回去。
+        inject_css()
+        css_done = True
         render_empty_state()
     else:
         if st.session_state.pop("_intro_pending", False):
@@ -6060,7 +6065,8 @@ def main() -> None:
 
     # 背景必须在输入卡之后注入：换省份时旧城市会被 _sync_select 重置，
     # 早于控件读 session_state 就会拿到上一轮的失效城市，背景慢一整拍。
-    inject_css()
+    if not css_done:
+        inject_css()
 
 
 if __name__ == "__main__":
