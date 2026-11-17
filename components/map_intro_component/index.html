@@ -356,11 +356,39 @@ button { font-family: inherit; }
 }
 #poi-card.is-below::after { bottom: auto; top: -7px; transform: rotate(225deg); }
 
-.pc-hero { position: relative; height: 168px; background: #0b0f16; }
+.pc-hero { position: relative; height: 160px; overflow: hidden; background: #0b0f16; pointer-events: auto; }
 .pc-hero img { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity 0.16s linear; }
 .pc-hero::after {
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.05) 0%, rgba(0, 0, 0, 0) 40%, rgba(8, 10, 15, 0.95) 100%);
+  pointer-events: none;
+}
+/* 轮播左右箭头：压在图上，自己吃事件，不把拖拽传给地图 */
+.pc-arrow {
+  position: absolute; top: 50%; z-index: 3; width: 28px; height: 28px;
+  transform: translateY(-50%); display: grid; place-items: center;
+  border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(2, 6, 23, 0.55); color: #fff; font-size: 15px; line-height: 1;
+  cursor: pointer; pointer-events: auto; backdrop-filter: blur(4px);
+  transition: background 0.18s, border-color 0.18s;
+}
+.pc-arrow:hover { background: rgba(255, 47, 63, 0.85); border-color: rgba(255, 90, 100, 0.9); }
+.pc-arrow.prev { left: 9px; }
+.pc-arrow.next { right: 9px; }
+.pc-dots {
+  position: absolute; left: 50%; bottom: 9px; z-index: 3;
+  transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
+  pointer-events: none;
+}
+.pc-dots .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.38);
+  transition: background 0.18s, transform 0.18s;
+}
+.pc-dots .dot.is-active { background: #ff2f3f; transform: scale(1.25); }
+.pc-count {
+  position: absolute; right: 12px; bottom: 8px; z-index: 3;
+  font-size: 10px; letter-spacing: 0.05em; color: rgba(255, 255, 255, 0.72);
+  pointer-events: none;
 }
 .pc-caption {
   position: absolute; left: 14px; bottom: 10px; z-index: 2;
@@ -1574,20 +1602,25 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     }
 
     function renderCard(poi) {
-      var imgs = poi.images || [];
-      var thumbs = imgs.map(function (im, i) {
-        return '<button class="th' + (i === 0 ? ' is-active' : '') + '" data-src="' + imgSrc(im.src) + '">' +
-          '<img src="' + imgSrc(im.src) + '" alt=""></button>';
+      var imgs = (poi.images && poi.images.length) ? poi.images : [{ src: greyImage(poi.name), caption: poi.name }];
+      var slides = imgs.length;
+      var dots = imgs.map(function (_, i) {
+        return '<span class="dot' + (i === 0 ? ' is-active' : '') + '"></span>';
       }).join('');
       cardBody.innerHTML =
-        '<div class="pc-hero"><img id="pc-main" src="' + (imgs[0] ? imgSrc(imgs[0].src) : '') + '" alt="">' +
-        '<span class="pc-caption">' + (imgs[0] ? imgs[0].caption : '') + '</span>' +
-        '<span class="pc-kind">' + poi.kind + '</span></div>' +
+        '<div class="pc-hero">' +
+        '<img id="pc-main" alt="">' +
+        '<span class="pc-caption"></span>' +
+        '<span class="pc-kind">' + poi.kind + '</span>' +
+        '<button class="pc-arrow prev" type="button" aria-label="上一张">‹</button>' +
+        '<button class="pc-arrow next" type="button" aria-label="下一张">›</button>' +
+        '<div class="pc-dots">' + dots + '</div>' +
+        '<span class="pc-count">1/' + slides + '</span>' +
+        '</div>' +
         '<div class="pc-main">' +
         '<h3>' + poi.name + '</h3>' +
         '<div class="pc-meta"><span>🗓 ' + poi.time + '</span><span>⏱ ' + poi.stay + '</span></div>' +
         '<p>' + poi.desc + '</p>' +
-        '<div class="pc-thumbs">' + thumbs + '</div>' +
         (poi.video ? '<video class="pc-video" src="' + poi.video + '" controls playsinline></video>' : '') +
         '<div class="pc-actions"><button class="pc-btn" data-act="focus">在地图上定位</button>' +
         '<button class="pc-btn is-ghost" data-act="detail">查看行程详情 →</button></div>' +
@@ -1595,18 +1628,37 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
 
       var main = cardBody.querySelector('#pc-main');
       var caption = cardBody.querySelector('.pc-caption');
-      cardBody.querySelectorAll('.th').forEach(function (btn, idx) {
-        btn.addEventListener('click', function () {
-          cardBody.querySelectorAll('.th').forEach(function (b) { b.classList.remove('is-active'); });
-          btn.classList.add('is-active');
-          main.style.opacity = '0';
-          setTimeout(function () {
-            main.src = btn.dataset.src;
-            caption.textContent = (imgs[idx] && imgs[idx].caption) || '';
-            main.style.opacity = '1';
-          }, 120);
+      var counter = cardBody.querySelector('.pc-count');
+      var dotEls = cardBody.querySelectorAll('.pc-dots .dot');
+      var at = 0;
+
+      function show(index) {
+        at = ((index % slides) + slides) % slides;
+        var item = imgs[at] || {};
+        // 404 / 防盗链失败统一落到灰色占位，不把破图留在卡片里
+        main.onerror = function () {
+          main.onerror = null;
+          main.src = greyImage(poi.name);
+        };
+        main.src = imgSrc(item.src || '');
+        caption.textContent = item.caption || '';
+        counter.textContent = (at + 1) + '/' + slides;
+        Array.prototype.forEach.call(dotEls, function (dot, i) {
+          dot.classList.toggle('is-active', i === at);
         });
-      });
+      }
+      show(0);
+
+      function step(delta) {
+        return function (e) {
+          // 切图不能把事件交给地图，否则手指一划就变成拖动底图
+          e.preventDefault();
+          e.stopPropagation();
+          show(at + delta);
+        };
+      }
+      cardBody.querySelector('.pc-arrow.prev').addEventListener('click', step(-1));
+      cardBody.querySelector('.pc-arrow.next').addEventListener('click', step(1));
       cardBody.querySelector('[data-act="detail"]').addEventListener('click', function () {
         CI.host && CI.host.emit('poi:detail', { id: poi.id, name: poi.name });
       });
@@ -1662,6 +1714,10 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     card.querySelector('.poi-card-close').addEventListener('click', function (e) {
       e.stopPropagation();
       closeCard();
+    });
+    // 轮播 / 拖图时不能让事件漏到地图：卡片自己全吃下，避免切图变成拖动底图
+    ['pointerdown', 'touchstart', 'wheel'].forEach(function (type) {
+      card.addEventListener(type, function (e) { e.stopPropagation(); }, { passive: true });
     });
     map.on('click', closeCard);
     map.on('move', positionCard);   // 相机移动时卡片跟着 Marker 走，只注册一次
@@ -2290,6 +2346,48 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     return c.toDataURL('image/png');
   }
 
+  function greyImage(name) {
+    // 灰色占位：图库缺失 / 加载失败时用，明确写「实拍图待补」，不拿别的城市照片冒充
+    var w = 720, h = 460;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#2A323E';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(24, 24, w - 48, h - 48);
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    ctx.font = '600 32px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(name || '').slice(0, 14), w / 2, h / 2 - 4);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = '400 20px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText('实拍图待补', w / 2, h / 2 + 40);
+    return c.toDataURL('image/png');
+  }
+
+  function cardImages(p) {
+    // 每个地点固定 4 帧轮播：优先高德该 POI 自己的图库，其次旧 img，缺的用灰色占位补齐
+    var srcs = [];
+    var add = function (url) {
+      if (url && typeof url === 'string' && srcs.indexOf(url) < 0) srcs.push(url);
+    };
+    var photos = p.photos;
+    if (typeof photos === 'string') photos = [photos];
+    (photos || []).forEach(add);
+    add(p.img);
+    var out = [];
+    for (var i = 0; i < 4; i++) {
+      if (srcs[i]) {
+        out.push({ src: srcs[i], caption: p.name + ' · 实拍 ' + (i + 1) });
+      } else {
+        out.push({ src: greyImage(p.name), caption: p.name + ' · 实拍图待补' });
+      }
+    }
+    return out;
+  }
+
   function makeExtent(pois) {
     // 没有对应城市的行政边界时，用 POI 包围盒外扩一圈当作“本次行程范围”，
     // 保持和成都五城区高亮同一套视觉（红色发光边框 + 圈外压暗）。
@@ -2375,7 +2473,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         labelOffset: offsets[i] || [0, 6],
         stay: stay,
         desc: p.note || '',
-        images: [{ src: p.img || placeholderImage(p.name), caption: p.name }],
+        images: cardImages(p),
         video: null
       };
     });

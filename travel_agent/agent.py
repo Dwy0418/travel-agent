@@ -205,6 +205,31 @@ class TravelAgent:
                 continue
             names[key] = str(point["name"])
 
+    def _attach_poi_photos(self, itinerary: dict[str, Any]) -> None:
+        """把工具缓存里同名 POI 的实拍图挂到行程条目上，供片头 Marker 轮播。
+
+        高德 place/text 在 extensions=all 时会返回 photos，是该地点自己的图库；
+        缓存里找不到同名地点就不补图，由前端灰色占位，绝不跨城市借用照片。
+        """
+        gallery: dict[str, list[str]] = {}
+        for result in (self.state.get("tool_results_cache") or {}).values():
+            if not isinstance(result, dict):
+                continue
+            for poi in result.get("pois") or []:
+                if not isinstance(poi, dict):
+                    continue
+                name = str(poi.get("name") or "")
+                pics = [str(url) for url in (poi.get("photos") or []) if url]
+                if name and pics:
+                    gallery.setdefault(name, pics[:4])
+        if not gallery:
+            return
+        for day in itinerary.get("days") or []:
+            for item in day.get("items") or []:
+                pics = gallery.get(str(item.get("name") or ""))
+                if pics:
+                    item["photos"] = list(pics)
+
     def _place_name(self, lng: Any, lat: Any) -> str:
         try:
             key = (round(float(lng), 4), round(float(lat), 4))
@@ -724,6 +749,8 @@ class TravelAgent:
 
         if itinerary is None:
             itinerary = self.state.get("itinerary_draft") or {}
+        # 实拍图只从真实 POI 缓存里取，按地点名精确匹配；没有就留空
+        self._attach_poi_photos(itinerary)
         status = "ok" if (itinerary and not issues) else ("max_iterations" if itinerary else "failed")
 
         budget = tools.estimate_budget(

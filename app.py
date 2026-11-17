@@ -590,10 +590,13 @@ CITY_PRIORITY = [
 ]
 
 # 一页 8 张：桌面 4 列正好两行，整页高度落在「视口 - 吸底输入卡」里。
-# 翻页由服务端状态控制，一次只渲染当前页这 8 张；页数写死 3，凑不满一页时末页自动少几张。
+# 翻页交给前端的纵向 scroll snap：所有页同时在 DOM 里，页数按 ceil(总数/8) 动态算。
+# 推荐池取 72 的容量，现有 11 个城市 × 6 条正好 66 张，落在 50–100 的要求区间。
 PAGE_SLOTS = 8
-PAGE_COUNT = 3
-CARD_SLOTS = PAGE_SLOTS * PAGE_COUNT
+CARD_SLOTS = 72
+# 兼容旧用例的只读常量：实际页数在 render_empty_state() 里按 ceil(卡片数/8) 现算，
+# 全国默认池 66 张时正好 9 页。翻页本身已交给前端 scroll snap，不再读这个值。
+PAGE_COUNT = math.ceil(CARD_SLOTS / PAGE_SLOTS)
 
 # 「不限」占位项：让用户只看省级 / 全国推荐，而不用被迫选具体城市。
 # 值为空串提交给 Agent 前会被拦截（Agent 要求城市必填）。
@@ -2135,10 +2138,67 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
     }
 }
 
-/* 翻页已改成服务端严格分页：整页只渲染当前页的 8 张卡，页面里不存在「下一页」
-   的卡片，也就不再需要 scroll-snap 把整页顶到吸附点上。
-   原来的 mandatory 吸附在矮窗口里还会把第二排卡锁住，一并去掉。 */
+/* 首页：纵向整页吸附。所有页同时在 DOM 里，父容器就是唯一滚动区：
+   隐藏滚动条、100dvh 一页、scroll-snap-align:start。
+   主区本身不再滚（overflow:hidden），避免出现内外两层滚动条。 */
+.st-key-home_pages {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    flex: none !important;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-snap-type: y mandatory;
+    scrollbar-width: none;             /* Firefox */
+    -ms-overflow-style: none;          /* 旧 Edge */
+    gap: 0 !important;                 /* 页容器之间的默认 flex gap 会破坏吸附点 */
+}
+.st-key-home_pages::-webkit-scrollbar { display: none; }
+/* Streamlit 会把每个子块包进 stLayoutWrapper：吸附点与 100dvh 必须落在这一层，
+   否则内层块再高，外层的自动高度也会把整页撑开。 */
+.st-key-home_pages > div[data-testid="stLayoutWrapper"],
+.st-key-home_pages [class*="st-key-home_page_"] {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    scroll-snap-align: start;
+}
+.st-key-home_pages > div[data-testid="stLayoutWrapper"] {
+    flex: none !important;
+}
+.st-key-home_pages [class*="st-key-home_page_"] {
+    display: flex !important;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(8px, 1.2vh, 14px) !important;
+    padding: 0 clamp(4px, 1vw, 14px);
+}
+/* 首页主区让位给吸附容器：去掉上下留白，main 不再自己滚 */
+main[data-testid="stMain"]:has(.st-key-home_pages) {
+    overflow: hidden !important;
+}
+div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+/* 一页 2×4：桌面固定 4 列，行高压缩到 100dvh 内能放下两行 + hero */
+.st-key-home_pages div[data-testid="stHorizontalBlock"]:has(.pc-face) {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    max-width: 1400px;
+    margin-inline: auto;
+    width: 100%;
+}
+.st-key-home_pages { --pc-face-h: clamp(120px, calc((100dvh - 420px) / 2), 240px); }
+/* 末页给吸底输入卡让出高度；输入卡只在末页滑入，其余页 translateY 藏到视口下 */
+.st-key-home_pages > div[data-testid="stLayoutWrapper"]:last-child [class*="st-key-home_page_"],
+.st-key-home_pages > div[data-testid="stElementContainer"]:last-child [class*="st-key-home_page_"],
+.st-key-home_pages > [class*="st-key-home_page_"]:last-child {
+    padding-bottom: calc(var(--ci-composer-h, 180px) + 12px);
+}
+/* 左上角页码：固定定位，随滚动由前端脚本改文字 */
 .pc-page {
+    position: fixed;
+    left: clamp(14px, 2.4vw, 34px);
+    top: clamp(12px, 2vh, 24px);
+    z-index: 24;
     display: flex;
     align-items: baseline;
     gap: 10px;
@@ -2146,36 +2206,10 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
     font-size: 13px;
     font-weight: 700;
     color: #8FA6C6;
+    pointer-events: none;
 }
 .pc-page-no { color: #E2ECFA; }
-/* 上一页 / 下一页：右上角唯一的分页入口（圆形数字分页器已删除）。
-   容器 key 会落在 st-key-pc_prev / st-key-pc_next 上，按 key 精确改样式，
-   不会波及其它 st.button。 */
-.st-key-pc_prev button,
-.st-key-pc_next button {
-    min-height: 32px !important;
-    padding: 0.1rem 0.78rem !important;
-    border-radius: 999px !important;
-    border: 1px solid rgba(148, 190, 240, .35) !important;
-    background: rgba(9, 20, 36, .55) !important;
-    color: #BFDBFE !important;
-    font-size: 12.5px !important;
-    font-weight: 700 !important;
-    box-shadow: none !important;
-    transition: background .18s ease, color .18s ease, border-color .18s ease;
-}
-.st-key-pc_prev button:hover,
-.st-key-pc_next button:hover {
-    background: rgba(59, 130, 246, .30) !important;
-    border-color: rgba(148, 190, 240, .60) !important;
-    color: #FFFFFF !important;
-}
-.st-key-pc_prev button:disabled,
-.st-key-pc_next button:disabled {
-    opacity: .35 !important;
-    background: rgba(9, 20, 36, .30) !important;
-    color: #BFDBFE !important;
-}
+.pc-page-scope { font-size: 12.5px; font-weight: 600; color: #8FA6C6; }
 
 /* 吸底输入卡：st.container(key="composer") 会带上官方保证的 st-key-composer 类名。
    卡里的 chat_input 用 CSS 钉底而不是放在主区顶层，是为了让标题、对话回看、
@@ -2194,6 +2228,17 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 18px;
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
+    /* 输入卡只在最后一页升起：transform 滑入滑出，不改 height，
+       否则每页的吸附高度会跟着变。默认藏在视口下 24px。 */
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+    visibility: hidden;
+    transition: transform .42s cubic-bezier(.22, .61, .36, 1), opacity .3s ease, visibility .42s;
+}
+html.ci-last-page .st-key-composer {
+    transform: translateY(0);
+    opacity: 1;
+    visibility: visible;
 }
 /* 输入卡里的控件自己还铺着一层实色（主题给的），会把毛玻璃糊回一块板：
    输入框与内层容器全部让路，只留一条细边标出可输入区域。 */
@@ -2211,6 +2256,10 @@ div[data-testid="stHorizontalBlock"]:has(.pc-face) > div[data-testid="stColumn"]
 .st-key-composer [data-testid="stChatInput"] textarea {
     background: transparent !important;
     color: #F1F5F9 !important;
+}
+.st-key-composer [data-testid="stChatInput"] textarea::placeholder {
+    color: rgba(226, 232, 240, 0.55) !important;
+    -webkit-text-fill-color: rgba(226, 232, 240, 0.55) !important;
 }
 /* 「精确设置」弹层也是玻璃：Streamlit 主题把 popover body 的底色写死，
    这里必须 !important 才盖得住。只作用在弹层本体，不给主内容区铺底，
@@ -2660,8 +2709,8 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
     padding: 5px 11px;
     font-size: 12.5px;
     color: #E2E8F0;
-    background: rgba(148, 163, 184, 0.12);
-    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(51, 65, 85, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.28);
     border-radius: 999px;
 }
 [data-testid="stDialog"] .dt-video {
@@ -2702,6 +2751,70 @@ div[data-testid="stDialog"] > div {
     max-width: min(1280px, 94vw) !important;
     max-height: calc(100vh - 96px) !important;
     overflow-y: auto !important;
+    /* 深色毛玻璃：主题是浅色，弹窗默认白底，这里必须整体压成深色，
+       否则标题/正文改浅色后会变成白底白字。 */
+    background: rgba(15, 23, 42, 0.82) !important;
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-radius: 20px !important;
+    box-shadow: 0 30px 80px rgba(2, 6, 23, 0.6) !important;
+    color: #E2E8F0 !important;
+}
+/* 弹窗内所有 Streamlit 原生文字（caption / label / selectbox）统一提亮 */
+[data-testid="stDialog"],
+[data-testid="stDialog"] p,
+[data-testid="stDialog"] label,
+[data-testid="stDialog"] span {
+    color: #CBD5E1;
+}
+[data-testid="stDialog"] .dt-hero {
+    position: relative;
+    width: 100%;
+    height: clamp(150px, 22vh, 240px);
+    margin: 0 0 14px 0;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #0B1220;
+}
+[data-testid="stDialog"] .dt-hero img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+[data-testid="stDialog"] .dt-hero-shade {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(2, 6, 23, 0.05) 0%, rgba(15, 23, 42, 0.35) 55%, rgba(15, 23, 42, 0.95) 100%);
+    pointer-events: none;
+}
+/* 弹窗里的下拉 / 日期控件：浅色主题会给白底，压在深色玻璃上很突兀 */
+[data-testid="stDialog"] div[data-testid="stSelectbox"] div[role="group"],
+[data-testid="stDialog"] div[data-testid="stDateInputField"],
+[data-testid="stDialog"] div[data-baseweb="input"],
+[data-testid="stDialog"] div[data-baseweb="select"] > div {
+    background: rgba(9, 16, 28, 0.72) !important;
+    border: 1px solid rgba(148, 163, 184, 0.28) !important;
+    color: #E2E8F0 !important;
+}
+[data-testid="stDialog"] input {
+    color: #E8EEF7 !important;
+    -webkit-text-fill-color: #E8EEF7 !important;
+}
+/* 「只套用」= 深色幽灵按钮；「就按这个行程规划」仍走全局 primary 蓝紫渐变 */
+[data-testid="stDialog"] [class*="st-key-fill_"] button {
+    background: rgba(15, 23, 42, 0.55) !important;
+    border: 1px solid rgba(148, 163, 184, 0.34) !important;
+    color: #CBD5E1 !important;
+    box-shadow: none !important;
+}
+[data-testid="stDialog"] [class*="st-key-fill_"] button:hover {
+    background: rgba(51, 65, 85, 0.55) !important;
+    border-color: rgba(148, 190, 240, 0.55) !important;
+    color: #FFFFFF !important;
+    transform: none;
+    box-shadow: none;
 }
 /* 左栏（图集 + 视频 + 时间轴）比右栏长很多，右栏跟着滚就不留大片黑 */
 [data-testid="stDialog"] div[data-testid="stColumn"]:has(.dt-panel) {
@@ -2722,8 +2835,8 @@ div[data-testid="stDialog"] > div {
     margin-bottom: 12px;
     padding: 12px 14px 14px 14px;
     border-radius: 14px;
-    background: linear-gradient(180deg, rgba(15, 23, 42, .86), rgba(11, 18, 32, .94));
-    border: 1px solid rgba(148, 163, 184, .18);
+    background: rgba(30, 41, 59, 0.88);
+    border: 1px solid rgba(148, 163, 184, .22);
     box-shadow: 0 10px 26px rgba(2, 6, 23, .42);
 }
 [data-testid="stDialog"] .dt-panel .dt-sec {
@@ -3258,8 +3371,6 @@ def apply_pending_preset() -> None:
     if not preset:
         return
     _payload_to_state(preset["payload"])
-    st.session_state["_preset_hint"] = preset["title"]
-    _chat_log().append({"role": "assistant", "content": f"已套用「{preset['title']}」，条件都填好了。"})
 
 
 def _scroll_top_html() -> str:
@@ -3301,6 +3412,107 @@ def _embed_scroll_top() -> None:
         except TypeError:
             pass
     st_components.html(html, height=0)
+
+
+def _home_scroll_html(total: int) -> str:
+    """首页整页吸附：滚轮一次切一页、页码实时更新、末页升起输入框、邻页懒加载封面。
+
+    全部跑在父页面上下文（st.iframe 与主页面同源）：
+    - wheel 必须 passive:false 才能 preventDefault；一次切换后冻结 800ms，
+      避免传统鼠标一滚就飞过两三页；
+    - IntersectionObserver 盯最后一页，用 <html> 上的 ci-last-page 类驱动
+      composer 的 translateY 滑入滑出，不改高度；
+    - 封面按当前页 ±1 懒加载，66 张卡片虽然都在 DOM 里，但不会同时下载 66 张图。
+    """
+    _ = total
+    return """
+<script>
+(function () {
+  var p = window.parent, doc;
+  try { doc = p.document; } catch (e) { return; }
+  var sc = doc.querySelector('.st-key-home_pages');
+  if (!sc) return;
+  var pages = Array.prototype.slice.call(
+    sc.querySelectorAll('[class*="st-key-home_page_"]')
+  );
+  if (!pages.length) return;
+  var last = pages.length - 1;
+  var root = doc.documentElement;
+  var idx = Math.max(0, Math.min(last, Math.round(sc.scrollTop / (sc.clientHeight || 1))));
+  var locked = 0, raf = 0;
+  // 上一轮如果停在末页，<html> 上的类会留到新页面；先清掉，等 IO 重新判定
+  root.classList.remove('ci-last-page');
+
+  function updateLabel() {
+    var el = doc.querySelector('.pc-page');
+    if (!el) return;
+    var no = el.querySelector('.pc-page-no');
+    if (no) no.textContent = '第 ' + (idx + 1) + ' / ' + pages.length + ' 页';
+  }
+
+  function loadNeighbours() {
+    pages.forEach(function (pg, pi) {
+      if (Math.abs(pi - idx) > 1) return;
+      var faces = pg.querySelectorAll('.pc-face[data-bg]');
+      Array.prototype.forEach.call(faces, function (face) {
+        if (face.dataset.loaded) return;
+        face.dataset.loaded = '1';
+        face.style.backgroundImage = "url('" + face.dataset.bg + "')";
+      });
+    });
+  }
+
+  function onScroll() {
+    if (raf) return;
+    raf = p.requestAnimationFrame(function () {
+      raf = 0;
+      var h = sc.clientHeight || 1;
+      var next = Math.max(0, Math.min(last, Math.round(sc.scrollTop / h)));
+      if (next !== idx) { idx = next; updateLabel(); loadNeighbours(); }
+    });
+  }
+
+  sc.addEventListener('scroll', onScroll, { passive: true });
+  sc.addEventListener('wheel', function (e) {
+    if (!e.deltaY) return;
+    // 滚轮事件必须拦住默认滚动，否则浏览器会自己连续滚，snap 也拉不住
+    e.preventDefault();
+    var now = Date.now();
+    if (now < locked) return;
+    var target = Math.max(0, Math.min(last, idx + (e.deltaY > 0 ? 1 : -1)));
+    if (target === idx) return;
+    locked = now + 800;
+    sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' });
+  }, { passive: false });
+
+  if (p.IntersectionObserver) {
+    var io = new p.IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        root.classList.toggle('ci-last-page', entry.isIntersecting);
+      });
+    }, { root: sc, threshold: 0.35 });
+    io.observe(pages[last]);
+  }
+
+  updateLabel();
+  loadNeighbours();
+})();
+</script>
+"""
+
+
+def _embed_home_scroll(total: int) -> None:
+    """挂首页吸附脚本（1px iframe，不占版面）。"""
+    html = "<html><body style='margin:0'>" + _home_scroll_html(total) + "</body></html>"
+    frame = getattr(st, "iframe", None)
+    if callable(frame):
+        try:
+            frame(html, height=1)
+            return
+        except TypeError:
+            pass
+    st_components.html(html, height=0)
+
 
 
 def _layout_sync_html() -> str:
@@ -3466,65 +3678,68 @@ def _embed_plan_ticker(run_id: str | None = None) -> None:
 
 
 def render_empty_state() -> None:
-    """首屏视觉中心：Agent 身份 + 按页排布的推荐卡片。
+    """首屏视觉中心：Agent 身份 + 纵向 scroll snap 的多页推荐卡片。
 
-    一页严格 8 张：翻页是服务端状态（_card_page），这一轮只渲染当前页的卡片，
-    DOM 里不存在「下一页」的 8 张，底部也就不会冒出第三行。
-    分页入口只有右上角的上一页 / 下一页，点完平滑回页首。
+    一页 8 张（4 列 × 2 行），页数 = ceil(卡片总数 / 8)。所有页同时在 DOM 里，
+    由前端 CSS scroll-snap 吸附、滚轮一次切一页；服务端不再维护页码。
+    封面图只预加载第一页，其余页由滚动脚本按「邻页 ±1」懒加载。
     """
     cards, scope = pick_recommendations()
     total = max(1, math.ceil(len(cards) / PAGE_SLOTS))
-    page = max(1, min(int(st.session_state.get("_card_page") or 1), total))
-    st.session_state["_card_page"] = page
-    page_cards = cards[(page - 1) * PAGE_SLOTS: page * PAGE_SLOTS]
+    first_page = cards[:PAGE_SLOTS]
 
+    # 只预加载第一页的封面：66 张全预载会白吃好几 MB 带宽。
+    # 预载必须挂在比卡片 CSS 更早的块里（这里的 hero 哨兵不可见，只负责锚点）。
     st.markdown(
-        "<div class='hero'>"
-        "<div class='hero-title'>✈️ 旅游规划助手</div>"
-        "<div class='hero-sub'>挑一张卡片直接出行程，或在最下方一句话告诉管家。</div>"
-        # 只预加载当前页的封面：另外两页不在 DOM 里，提前下载纯属浪费带宽
-        "</div>" + _cover_preload_html(page_cards),
+        "<div class='hero' style='display:none'><div class='hero-title'></div></div>"
+        + _cover_preload_html(first_page),
         unsafe_allow_html=True,
     )
-    # 照片规则按全局序号生成，翻页后 .pc-face-N 才对得上各自的图
-    st.markdown(_card_photo_css(cards), unsafe_allow_html=True)
+    # 第一页的图走 CSS 保证首屏即出；其余页由脚本按 data-bg 懒加载
+    st.markdown(_card_photo_css(first_page), unsafe_allow_html=True)
+    # 页码浮在左上角，随滚动实时更新；不参与任何一页的排版
+    st.markdown(
+        f"<div class='pc-page'><span class='pc-page-no'>第 1 / {total} 页</span>"
+        f"<span class='pc-page-scope'>{escape(scope)}</span></div>",
+        unsafe_allow_html=True,
+    )
 
-    head_left, head_prev, head_next = st.columns([9, 1.4, 1.4], vertical_alignment="center")
-    with head_left:
-        st.markdown(
-            f"<div class='pc-page'><span class='pc-page-no'>第 {page} / {total} 页</span>"
-            f"<span class='pc-page-scope'>{escape(scope)}</span></div>",
-            unsafe_allow_html=True,
-        )
-    with head_prev:
-        if st.button("← 上一页", key="pc_prev", disabled=page <= 1, width="stretch"):
-            st.session_state["_card_page"] = page - 1
-            st.session_state["_scroll_top"] = True
-            st.rerun()
-    with head_next:
-        if st.button("下一页 →", key="pc_next", disabled=page >= total, width="stretch"):
-            st.session_state["_card_page"] = page + 1
-            st.session_state["_scroll_top"] = True
-            st.rerun()
+    with st.container(key="home_pages"):
+        for page in range(total):
+            page_cards = cards[page * PAGE_SLOTS: (page + 1) * PAGE_SLOTS]
+            with st.container(key=f"home_page_{page}"):
+                if page == 0:
+                    # hero 只属于第一页：跟着 scroll snap 一起滚走，不占后续页的高度
+                    st.markdown(
+                        "<div class='hero'>"
+                        "<div class='hero-title'>✈️ 旅游规划助手</div>"
+                        "<div class='hero-sub'>挑一张卡片直接出行程，或在最下方一句话告诉管家。</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                for row_start in (0, 4):
+                    row_cards = page_cards[row_start: row_start + 4]
+                    if not row_cards:
+                        continue
+                    cols = st.columns(4, gap="medium")
+                    for slot, (col, preset) in enumerate(zip(cols, row_cards)):
+                        # 全局序号：_card_photo_css 与 data-bg 都按这个序号对图
+                        order = page * PAGE_SLOTS + row_start + slot
+                        with col:
+                            with card():
+                                st.markdown(_card_face(preset, order, slot), unsafe_allow_html=True)
+                                # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
+                                if st.button("看详情", key=f"detail_{preset['key']}"):
+                                    st.session_state["_open_detail"] = preset["key"]
+                                    st.rerun()
+                                if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
+                                    # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
+                                    st.session_state["_pending_preset"] = preset
+                                    st.session_state["_run_preset"] = True
+                                    st.rerun()
 
-    cols = st.columns(len(page_cards), gap="medium")
-    for slot, (col, preset) in enumerate(zip(cols, page_cards)):
-        with col:
-            with card():
-                # 浮层序号是全局的（对应 _card_photo_css 的规则），飘上来的延迟按页内算
-                st.markdown(_card_face(preset, (page - 1) * PAGE_SLOTS + slot, slot), unsafe_allow_html=True)
-                # 不加 help：Streamlit 会把按钮包进 tooltip 容器，照片上的点击层就不好铺满
-                if st.button("看详情", key=f"detail_{preset['key']}"):
-                    st.session_state["_open_detail"] = preset["key"]
-                    st.rerun()
-                if full_width_button("⚡ 一键生成这个行程", key=f"preset_{preset['key']}"):
-                    # 不再只回填侧栏：套用即开跑，用户不用再点一次「开始规划」
-                    st.session_state["_pending_preset"] = preset
-                    st.session_state["_run_preset"] = True
-                    st.rerun()
+    _embed_home_scroll(total)
 
-    if st.session_state.pop("_scroll_top", False):
-        _embed_scroll_top()
 
 
 def _card_face(preset: dict[str, Any], slot: int, delay: int | None = None) -> str:
@@ -3548,7 +3763,8 @@ def _card_face(preset: dict[str, Any], slot: int, delay: int | None = None) -> s
         label = "人均" if people > 1 else "预算"
         meta += f" · {label} <span class='pc-price'>¥{per:,.0f}</span>"
     return (
-        f"<div class='pc-face pc-face-{slot}' style='animation-delay:{(slot if delay is None else delay) * 60}ms'>"
+        f"<div class='pc-face pc-face-{slot}' data-bg=\"{escape(_cover_url(preset['img']), quote=True)}\" "
+        f"style='animation-delay:{(slot if delay is None else delay) * 60}ms'>"
         "<div class='pc-shade'></div>"
         f"<div class='pc-tag'>{escape(preset['tag'])}</div>"
         "<div class='pc-hint'>👁 看详情</div>"
@@ -3840,6 +4056,15 @@ def _render_detail(preset: dict[str, Any]) -> None:
     budget = float(row.get("budget") or 0)
     days = int(row.get("days") or 0)
 
+    cover = str(preset.get("img") or "")
+    if cover:
+        st.markdown(
+            "<div class='dt-hero'>"
+            f"<img src='{escape(cover, quote=True)}' alt=''>"
+            "<div class='dt-hero-shade'></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
     st.markdown(
         f"<div class='dt-title'>{escape(preset['tag'])} {escape(preset['title'])}</div>"
         f"<div class='dt-desc'>{escape(preset['desc'])}</div>",
@@ -4756,43 +4981,27 @@ def apply_pending_chat() -> None:
 
 
 def render_composer() -> None:
-    """页面底部吸底的旅行管家输入卡：一句话、精确设置、开始规划合成同一张卡。
+    """页面底部吸底的旅行管家输入卡：精确设置 + 一句话 + 开始规划。
 
-    侧栏已下线，改由 Streamlit 把主区里的 chat_input 钉在视口底部，
-    控件在脚本末尾执行，所以点按钮 / 提交话都走「写标记 + rerun」，
-    下一轮在顶部用 _payload_from_state() 取条件，保证只跑一次。
+    对话气泡与「已套用」提示已移除，只留操作区。控件在脚本末尾执行，
+    所以点按钮 / 提交话都走「写标记 + rerun」，下一轮在顶部用
+    _payload_from_state() 取条件，保证只跑一次。
     """
-    log = _chat_log()
     with st.container(key="composer"):
-        st.markdown(
-            "<div class='cp-head'><span class='cp-title'>我是你的旅行管家 ✈️</span>"
-            "<span class='cp-sub'>请用大白话描述你的出行计划。</span></div>",
-            unsafe_allow_html=True,
-        )
-        hint = st.session_state.pop("_preset_hint", None)
-        if hint:
-            st.caption(f"已套用示例：{hint}")
-
-        if log:
-            with st.container(height=172, border=False):
-                for message in log[-10:]:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-
         with popover_or_expander("⚙️ 精确设置（不想打字就点这个）"):
             _constraint_fields("f_")
 
-        bar = st.columns([1, 4], gap="small")
+        bar = st.columns([4, 1], gap="small")
         with bar[0]:
-            if full_width_button("开始规划", kind="primary"):
-                st.session_state["_run_now"] = True
-                st.rerun()
-        with bar[1]:
             said = st.chat_input(
                 "例如：10月15日和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜",
                 key="chat_said",
                 submit_mode="disable",
             )
+        with bar[1]:
+            if full_width_button("开始规划", kind="primary"):
+                st.session_state["_run_now"] = True
+                st.rerun()
         if said:
             # 控件本轮已实例化，改状态只能等下一次运行，所以先暂存再 rerun
             st.session_state["_pending_chat"] = said
@@ -5003,8 +5212,24 @@ def _snapshot_form() -> None:
 
 
 def _go_home() -> None:
-    """清空本次行程数据，回到首页空态。"""
+    """清空本次行程数据，回到首页空态，并把筛选显式重置为「全国热门」。
+
+    退出回调是脏状态的唯一入口：_snapshot_form() 只保存天数/人数/预算等，
+    如果省份和城市跟着 _pending_constraints 原样回填，首页会变成刚才看的
+    那个省市的推荐。这里在回填种子里写死三项，并在本轮先改 f_*：
+    详情页 / 结果页不渲染 composer，f_* 控件未实例化，此时写入不会抛
+    StreamlitAPIException。
+    """
     _snapshot_form()
+    seed = st.session_state.get("_pending_constraints")
+    if isinstance(seed, dict):
+        seed["country"] = CONSTRAINT_DEFAULTS["country"]
+        seed["province"] = UNLIMITED_PROVINCE
+        seed["city"] = UNLIMITED_CITY
+    st.session_state["f_country"] = CONSTRAINT_DEFAULTS["country"]
+    st.session_state["f_province"] = UNLIMITED_PROVINCE
+    st.session_state["f_city"] = UNLIMITED_CITY
+    st.session_state["_card_page"] = 1
     for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
         st.session_state.pop(key, None)
     st.rerun()
@@ -5723,6 +5948,8 @@ def _intro_pois(result: dict[str, Any]) -> list[dict[str, Any]]:
                     "note": str(item.get("note") or ""),
                     "cost": item.get("cost") or 0,
                     "img": str(item.get("pic") or item.get("photo") or ""),
+                    # 高德图库里该地点自己的实拍图，最多 4 张；没有就留空让组件占位
+                    "photos": [str(u) for u in (item.get("photos") or []) if u][:4],
                 }
             )
     return pois[:8]

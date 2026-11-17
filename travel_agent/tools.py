@@ -157,6 +157,13 @@ def search_poi(city: str, keyword: str, count: int = 5) -> dict[str, Any]:
             if len(location) != 2:
                 continue
             biz = raw.get("biz_ext") if isinstance(raw.get("biz_ext"), dict) else {}
+            # extensions=all 时高德会返回该 POI 的实拍图库；只取 url，最多 4 张。
+            # 没图的地点留空，前端用灰色占位，不拿别的城市照片冒充。
+            photos = [
+                _text(photo.get("url"))
+                for photo in (raw.get("photos") or [])
+                if isinstance(photo, dict) and _text(photo.get("url"))
+            ][:4]
             pois.append(
                 {
                     "name": _text(raw.get("name")),
@@ -167,6 +174,7 @@ def search_poi(city: str, keyword: str, count: int = 5) -> dict[str, Any]:
                     "open_time": _text(biz.get("open_time")),
                     "cost": _to_float(biz.get("cost")),
                     "type": _text(raw.get("type")),
+                    "photos": photos,
                 }
             )
         if not pois:
