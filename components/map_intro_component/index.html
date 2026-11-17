@@ -1866,13 +1866,18 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     var headEl = ui.routeHead;
     var clouds = Array.prototype.slice.call(document.querySelectorAll('.cloud'));
     var drawP = 0;   // 航线绘制进度，ticker 里用来每帧重算彗星头位置
+    var finalCam = null;   // build() 里算一次，落位时复用
 
     /* --------------------------- 自适应画质 --------------------------- */
-    // 软件渲染（SwiftShader）/ 低端集显上，3D 地形与 6 层全屏云是两块最贵的开销。
-    // 片头 2.5–4.5s 用真实 rAF 帧率采样一次，低于阈值就当场降档，
-    // 而不是把整段开场删掉。实测这台软件渲染机：全开 19fps、关地形 89fps，
-    // 所以 30fps 以下先把地形摘掉，18fps 以下再减云层、停航线流光。
+    // 3D 地形是这套片头里最贵的一层（MapLibre 没有 LOD 旋钮，只能整层挂/摘）。
+    // Tabbit（GPU tiles Disabled）实测：地形开着片头第一幕 3.9fps，摘掉后 70fps；
+    // 本地 SwiftShader 同样 21fps → 125fps。云层的 18 个全屏模糊叠图则只在
+    // 高 zoom 的落位段致命（留着它们落位后掉到 1fps），穿云段反而没问题。
+    var LEVEL_RANK = { minimal: 0, lite: 1, full: 2 };
+
     function applyQuality(level, fps) {
+      var cur = CI.perf && CI.perf.level;
+      if (cur && LEVEL_RANK[level] >= LEVEL_RANK[cur]) return;   // 只降不升
       CI.perf = {
         fps: Math.round(fps * 10) / 10,
         level: level,
@@ -1881,21 +1886,36 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       document.documentElement.setAttribute('data-ci-quality', level);
       if (level === 'full') return;
 
-      // 地形是这块最贵的：实测软件渲染下 19fps → 关掉后 89fps
+      // 地形是这块最贵的：实测软件渲染下片头 21fps → 摘掉后 125fps
       scene.setTerrainEnabled(false);
-      // 云层只在最差档减（6 层全屏叠图），且保留 2 层，避免穿云段整段消失
+      // 每帧改 paint 属性的航线流光也一起停掉；彗星头保住最后位置会像卡住，直接藏起
       if (level === 'minimal') {
-        clouds.forEach(function (el, i) { if (i >= 2) el.style.display = 'none'; });
-        // 每帧改 paint 属性的航线流光也一起停掉；彗星头保住最后位置会像卡住，直接藏起
         if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
         if (headEl) headEl.style.opacity = 0;
       }
     }
 
-    function watchQuality() {
+    // 片头一开始（0–0.6s，黑场还在淡出、航线未起飞）先采一次真实 rAF。
+    // 原来的采样窗是 2.5–4.5s：等它降档时第一幕已经卡完，而且采样本身被长卡顿污染
+    // （实测采到 0.8–4.8fps），只能给出最差档。提前到起飞前决策，
+    // 18fps 以下连流光/彗星头一起停（地形此时已经被摘掉，见 play()）。
+    function preflightQuality() {
       if (!cfg.adaptive) return;
-      // 前 2.5 秒是航线爬升（瓦片少），不能代表俯冲段的真实开销；
-      // 取 2.5–4.5s，含坠落开头，采样完在 4.5s 降档，余下的坠落与落位就顺了。
+      var frames = 0;
+      var t0 = performance.now();
+      function frame() {
+        frames += 1;
+        var dt = performance.now() - t0;
+        if (dt < 600) { requestAnimationFrame(frame); return; }
+        var fps = frames / (dt / 1000);
+        applyQuality(fps < 18 ? 'minimal' : 'full', fps);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    function watchQuality() {
+      // 二次确认：慢机在俯冲/高 zoom 段更贵，允许继续往下掉一档，但不再回升
+      if (!cfg.adaptive) return;
       var frames = 0;
       var t0 = performance.now();
       var sampling = false;
@@ -1914,8 +1934,6 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         gsap.ticker.remove(tick);
         var fps = frames / (dt / 1000);
         if (fps < 18) applyQuality('minimal', fps);
-        else if (fps < 30) applyQuality('lite', fps);
-        else applyQuality('full', fps);
       }
       gsap.ticker.add(tick);
     }
@@ -1942,9 +1960,17 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       headEl.style.transform = 'translate3d(' + p.x + 'px,' + p.y + 'px,0)';
       headEl.style.opacity = progress > 0.01 && progress < 0.995 ? 1 : 0;
     }
+    var lastFlowAt = 0;
     function flowLoop() {
-      var phase = (performance.now() % 3600) / 3600;
-      scene.setFlowPhase(0.02 + phase * 0.96);
+      // 航线淡出后（flowActive=false）不再空转：每帧重设 line-gradient / 投影都是白烧
+      if (!flowActive) return;
+      var now = performance.now();
+      // 流光只是一条 ~6% 宽的高光带，30fps 足够；60fps 每帧重写 paint 表达式纯浪费
+      if (now - lastFlowAt >= 33) {
+        lastFlowAt = now;
+        var phase = (now % 3600) / 3600;
+        scene.setFlowPhase(0.02 + phase * 0.96);
+      }
       // 相机和航线在同一条时间轴上跑，若只在 tween 的 onUpdate 里投影，
       // 暂停/拖时间轴时彗星头会停在上一次相机状态上。ticker 每帧重算最稳。
       headMove(drawP);
@@ -2026,23 +2052,18 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       }, T.fall[0] + 0.35);
       t.call(function () { flowActive = false; headEl.style.opacity = 0; scene.showCityPins(false); }, null, T.fall[0] + 1.2);
 
-      // 地形起伏随俯冲拉高，落位后回落（真实 3D 的“地形呼吸”）
+      // 地形起伏：过去是逐帧 setTerrain(exaggeration)，而 MapLibre 每次调用都会
+      // 整块重建地形网格（实测回落段单帧 291–437ms）。改成只在幕间切两档，
+      // 视觉上仍是“俯冲拉高、落位回落”，但只付两次重建的代价。
       if (cfg.dem) {
-        var ex = { v: cfg.terrainExaggeration };
-        t.to(ex, {
-          v: cfg.terrainExaggeration * 1.45, duration: fallDur, ease: 'power2.in',
-          onUpdate: function () {
-            if (!scene.isTerrainOn()) return;
-            try { map.setTerrain({ source: 'dem', exaggeration: ex.v }); } catch (e) { /* ignore */ }
-          }
-        }, T.fall[0]);
-        t.to(ex, {
-          v: cfg.terrainExaggeration, duration: settleDur, ease: 'power2.out',
-          onUpdate: function () {
-            if (!scene.isTerrainOn()) return;
-            try { map.setTerrain({ source: 'dem', exaggeration: ex.v }); } catch (e) { /* ignore */ }
-          }
-        }, T.settle[0]);
+        t.call(function () {
+          if (!scene.isTerrainOn()) return;
+          try { map.setTerrain({ source: 'dem', exaggeration: cfg.terrainExaggeration * 1.45 }); } catch (e) { /* ignore */ }
+        }, null, T.fall[0]);
+        t.call(function () {
+          if (!scene.isTerrainOn()) return;
+          try { map.setTerrain({ source: 'dem', exaggeration: cfg.terrainExaggeration }); } catch (e) { /* ignore */ }
+        }, null, T.settle[0]);
       }
 
       // 云层：逐层放大 + 淡出，制造“穿过云墙”的透视
@@ -2056,12 +2077,18 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       });
       t.to(ui.flash, { opacity: 1, duration: 0.18, ease: 'none' }, T.flash[0]);
       t.to(ui.flash, { opacity: 0, duration: T.flash[1] - T.flash[0] - 0.18, ease: 'power2.out' }, T.flash[0] + 0.18);
-      t.to(ui.clouds, { opacity: 0, duration: 0.45 }, T.cloudBurst[1] - 0.3);
+      // 白闪在 5.28s 到全白：就在这一帧把 18 层全屏模糊云收掉（整屏全白，看不出来）。
+      // 留着它们落位段每帧都要重新合成 —— 实测 Tabbit 落位后从 71fps 掉到 1fps。
+      t.call(function () {
+        ui.clouds.style.opacity = 0;
+        clouds.forEach(function (el) { el.style.display = 'none'; });
+      }, null, T.flash[0] + 0.19);
       t.to(ui.haze, { opacity: 0.08, duration: 0.8 }, T.cloudBurst[1] - 0.3);
       t.to(ui.speedlines, { opacity: 0, duration: 0.5 }, T.cloudBurst[1] - 0.5);
 
       // —— 第三幕：落位 + 地界高亮 ——
       var fc = scene.finalCamera();
+      finalCam = fc;
       t.call(function () { caption(2); }, null, T.settle[0] + 0.15);
       t.to(cam, {
         lng: fc.center.lng, lat: fc.center.lat, zoom: fc.zoom,
@@ -2152,13 +2179,19 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
 
     /* 落位/完成共用的收尾：相机、图层、呼吸、坞舱都在这里落定 */
     function settleVisual() {
-      var fc = scene.finalCamera();
+      // 终态相机在 build() 里已经算过（cameraForBounds 走的是容器尺寸），这里直接复用，
+      // 落位回调里不再同步重算一遍。
+      var fc = finalCam || scene.finalCamera();
       cam.lng = fc.center.lng; cam.lat = fc.center.lat;
       cam.zoom = fc.zoom; cam.pitch = fc.pitch; cam.bearing = fc.bearing;
       applyCam();
-      if (cfg.dem && scene.isTerrainOn()) {
-        try { map.setTerrain({ source: 'dem', exaggeration: cfg.terrainExaggeration }); } catch (e) { /* ignore */ }
-      }
+      // 地形落位后维持片头里的状态：adaptive 路径下片头已摘掉地形，这里不重开 ——
+      // 实测 Tabbit 落位后重开地形，交互从 71fps 掉到 1fps（final zoom ~11 下
+      // DEM 网格重建 + 逐帧地形渲染都吃不住），重开等于把地图弄废。
+      // 只有 adaptive=0 的完整画质路径会一直在挂地形。
+      // 这个取舍需要产品确认；能力本身保留在 scene.setTerrainEnabled(true)。
+      // 同时把状态写进 DOM，便于测试/复测断言“落位后到底恢复了没有”。
+      document.documentElement.setAttribute('data-ci-terrain', scene.isTerrainOn() ? 'on' : 'off');
 
       gsap.to(ui.fade, { opacity: 0, duration: 0.4, ease: 'none' });
       gsap.to([ui.clouds, ui.flash, ui.speedlines, ui.haze], { opacity: 0, duration: 0.3, ease: 'none' });
@@ -2194,7 +2227,16 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         return;
       }
       disableInteractions();
-      watchQuality();
+      // 片头期间直接摘掉 3D 地形，而不是等采样降档：
+      //  · 地形是这套动画最贵的一层（Tabbit 第一幕 3.9fps → 摘掉后 70fps；
+      //    本地 SwiftShader 21fps → 125fps）；
+      //  · 同机位截图对比：落位后开/关地形 MAE 8.3（p95=31），肉眼几乎无差（平原城市），
+      //    而代价是整段动画掉一半以上帧率；
+      //  · 起飞前的采样窗测不出俯冲段的地形代价（起始机位 zoom 4.9 时地形很便宜），
+      //    所以不靠猜，动画期一律不挂。
+      if (cfg.adaptive && cfg.dem) scene.setTerrainEnabled(false);
+      preflightQuality();   // 起飞前再定一次档（主要决定要不要停流光/彗星头）
+      watchQuality();       // 中间再确认一次，只允许继续降
       tl = build();
       tl.timeScale(cfg.speed || 1);
       flowTick = flowLoop;
