@@ -2988,6 +2988,10 @@ div[data-testid="stDialog"] > div {
     z-index: -1;                       /* 沉到所有内容之下、html 深色底之上 */
     overflow: hidden;
     pointer-events: none;
+    /* 隔离外壳：背景层自成一块合成层，主区的任何重绘/重排都不会连带它，
+       也不会把它的绘制结果混到主区那一层里（Tabbit 软件合成下尤其明显） */
+    contain: layout paint;
+    will-change: opacity;
     --bg-dim: 1;                       /* 结果页由样式块压到 0.55，读表格时不抢注意力 */
     --bg-sat: 1;
 }
@@ -3090,6 +3094,14 @@ GLOBAL_CSS = GLOBAL_CSS.replace("__BG_LAYER_CSS__", _bg_layer_css())
 
 
 def inject_css() -> None:
+    """每次 rerun 重发同一份字节的全局样式与背景骨架。
+
+    这里不能按 session_state 哨兵「字面只注入一次」：Streamlit 每轮都会重算该
+    markdown 节点，跳过不发的那一轮它会被当成过期节点回收，整页立刻变成无样式
+    （实测：带哨兵的 #probe 第二次 rerun 后消失，恒定重发的 #always 一直在）。
+    真正要保证的是「内容恒定」——字节相同、位置相同，主区不产生结构性变化；
+    规划期 0.6s 的刷新已经在 fragment 里，这一块压根不会被重发。
+    """
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
     # 骨架与样式分两段注入：骨架字节恒定，rerun 不重发、动画不被打断；
     # 样式块只随图组变化，组与组之间靠 opacity 过渡完成渐变
@@ -5032,11 +5044,68 @@ def _finish_plan_job(job: _PlanJob) -> None:
 
 
 def _render_plan_job(job: _PlanJob) -> None:
-    """等待期的整屏：进度卡 + 取消按钮，靠主脚本轮询刷新真实阶段。
+    """等待期：进度卡 + 取消按钮，用 fragment 局部刷新真实阶段。
 
-    取消是普通控件点击：主线程没被 run() 占着，这一下 rerun 立刻生效，
-    回到首页空态；后台那一趟在下一个轮次安全点自行结束、结果丢弃。
+    这里刻意不再整页 rerun。旧写法每 0.6s 重跑整个脚本，主区（背景层、
+    卡片外壳）跟着反复重建；在 Tabbit 这类软件合成（Tiles 关闭）的环境里，
+    每次重建都会把上一帧再提交一次，屏幕上就是"首页残影"闪一下。
+    改成 fragment 后只有卡片这一小块重画，背景与图层树保持不动。
+
+    fragment 内的取消与收尾都必须 scope="app"：局部 rerun 只会原地转圈。
     """
+    if not _supports_fragment():
+        _render_plan_job_legacy(job)
+        return
+
+    inject_css()
+    _embed_plan_ticker(job.run_id)
+    cancel_key = f"ci_plan_cancel_{job.run_id}"
+
+    @st.fragment(run_every=0.6)
+    def _tick() -> None:
+        # 容器 key 固定为 ci_plan_wrap：卡片样式和 ticker 里「点 HTML 胶囊 ->
+        # 点隐藏真按钮」的选择器都按这个 key 找落点，换路径不能换 key
+        with st.container(key="ci_plan_wrap"):
+            box = st.empty()
+            box.markdown(
+                _plan_progress_html(job.done, job.live, job.elapsed()),
+                unsafe_allow_html=True,
+            )
+            if st.button("取消规划", key=cancel_key):
+                job.cancelled.set()
+                _snapshot_form()
+                for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+                    st.session_state.pop(key, None)
+                st.session_state.pop("_agent_job", None)
+                box.empty()
+                st.rerun(scope="app")
+        if job.finished.is_set():
+            # 先收尾（成功落 result / 失败落 _plan_error），再整页切走：
+            # 成功进片头，失败落到首页的错误条，都不在 fragment 里干等
+            _finish_plan_job(job)
+            box.empty()
+            st.rerun(scope="app")
+
+    _tick()
+    # 外层脚本停在等待页，别再往下渲染空态
+    st.stop()
+
+
+def _supports_fragment() -> bool:
+    """1.66 起有 st.fragment(run_every=...)。缺了就退回旧轮询，不让整页崩。"""
+    if not hasattr(st, "fragment"):
+        return False
+    try:
+        st.fragment(run_every=0.6)
+    except TypeError:
+        return False
+    except Exception:  # 某些版本在没有脚本上下文时抛别的异常
+        return False
+    return True
+
+
+def _render_plan_job_legacy(job: _PlanJob) -> None:
+    """降级路径：与改动前一致的整页轮询。"""
     inject_css()
     with st.container(key="ci_plan_wrap"):
         st.markdown(
@@ -5745,6 +5814,9 @@ def main() -> None:
     else:
         if st.session_state.pop("_intro_pending", False):
             # 片头独占一屏：先播，回传后再 rerun 走到下面的 show_result
+            # 片头这一屏也要先注入全局样式：否则上一轮（规划页）的 <style>
+            # 会被当成过期节点清掉，进度卡到片头之间会闪出一段无样式白字
+            inject_css()
             _play_intro(result)
             st.stop()
         show_result(result)
