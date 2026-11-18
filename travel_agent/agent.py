@@ -15,6 +15,33 @@ from . import config, llm, schemas, tools, validator, zh_labels
 #: 技术明细（原始参数、坐标、耗时）只进后台日志文件，不上屏。
 _detail_logger = logging.getLogger("travel_agent.detail")
 
+# 从「大致想法」里兜底识别的口语词：界面已经派生了 companions/preferences，
+# 这里再扫一遍原始 request，防止前端规则漏词或别的调用方直接传自由文本。
+_ELDER_WORDS = ("老人", "父母", "爸妈", "爸爸", "妈妈", "爷爷", "奶奶", "外公", "外婆", "长辈", "二老")
+_CHILD_WORDS = ("小孩", "孩子", "娃", "宝宝", "亲子", "儿童", "儿子", "女儿")
+_INDOOR_WORDS = ("室内", "博物馆", "美术馆", "展览", "展馆", "科技馆")
+_RELAX_WORDS = ("不想太累", "太累", "别太累", "轻松", "少走路", "慢一点", "节奏慢", "休闲", "别太赶", "不赶")
+_FOOD_WORDS = ("美食", "小吃", "好吃", "餐厅", "夜宵", "烧烤", "螺蛳粉")
+
+
+def _scan_request(text: str) -> tuple[list[str], list[str]]:
+    """从自由文本粗提 (同行人, 偏好)；只返回识别到的项，不猜。"""
+    raw = str(text or "")
+    companions: list[str] = []
+    prefs: list[str] = []
+    if any(word in raw for word in _ELDER_WORDS):
+        companions.append("带老人")
+    if any(word in raw for word in _CHILD_WORDS):
+        companions.append("带小孩")
+    if any(word in raw for word in _INDOOR_WORDS):
+        prefs.append("室内为主")
+    if any(word in raw for word in _RELAX_WORDS):
+        prefs.append("少走路/休闲游")
+    if any(word in raw for word in _FOOD_WORDS):
+        prefs.append("美食打卡")
+    return companions, prefs
+
+
 SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规则：
 1. 所有事实数据（景点、天气、路程、价格）必须调用工具获取，禁止编造任何信息。
 2. 严格按照用户的约束规划：天数、预算、同行人、特殊需求（如避雨、少走路、老人同行等）。
@@ -24,7 +51,11 @@ SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规�
 6. 当收到校验不通过的反馈时，根据问题重新调整行程，不要重复犯相同错误。
 7. 最终输出结构化的行程单，包含每日时间安排、景点、交通方式、耗时、花费、注意事项。
 8. 禁止自己计算距离、耗时、预算，一律以工具返回为准。
-9. 高德接口坐标必须是 GCJ-02，且经纬度顺序为【经度在前、纬度在后】。"""
+9. 高德接口坐标必须是 GCJ-02，且经纬度顺序为【经度在前、纬度在后】。
+10. 【大致想法】是用户自然语言诉求，必须从中提取同行人（带老人 / 带小孩）与偏好（室内、少走路、美食）并落实到行程：
+    识别到老人、小孩或「不想太累 / 轻松」时，每天最多 2 个景点、单日游览合计不超过 4 小时，
+    并在 12:00-14:00 安排至少 45 分钟休息（type 填 rest）；偏好室内时优先博物馆 / 美术馆 / 展馆。
+    只把原话抄进行程、不改变节奏和点位，视为没有执行约束。"""
 
 OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如下（字段名不得改动、禁止多余文字）：
 {
@@ -60,7 +91,7 @@ OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如
 - lng / lat 必须是 geocode 或 search_poi 返回的真实坐标（GCJ-02），经度在前；禁止编造。
 - cost 取 POI 的 cost 字段（未知填 0），open_time 取 POI 的 open_time（未返回填空字符串）。
 - indoor：博物馆/展馆/纪念馆等室内为 true，公园/山地/街区/茶田等户外为 false。
-- 每天时间在 09:00-18:00 之间，最多 3 个 attraction，相邻景点之间必须留出交通时间（按 plan_route 结果留足，宁可多留 10-15 分钟）。
+- 每天时间在 09:00-18:00 之间，最多 3 个 attraction（结构化约束给出更低上限时以约束为准），相邻景点之间必须留出交通时间（按 plan_route 结果留足，宁可多留 10-15 分钟）。
 - 单日时间预算（先算再排，别排完才发现超时）：游览合计 ≤ 5 小时（带老人/小孩 ≤ 4 小时）；
   排 3 个景点就每个排 1.5 小时（合计 4.5 小时），单个景点不要超过 2 小时；
   午休 1 小时 + 市内交通约 1.5 小时也占这 8 小时，排不下就果断少排一个景点——
@@ -101,19 +132,52 @@ def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     companions = raw.get("companions") or []
     if isinstance(companions, str):
         companions = [c.strip() for c in companions.replace("，", ",").split(",") if c.strip()]
+    companions = [str(c).strip() for c in companions if str(c).strip()]
+    request = str(raw.get("request") or "").strip()
+
+    # 前端已从「大致想法」派生过一轮；这里再扫原始句子，兼容直接调 Agent 的调用方。
+    auto_companions, auto_prefs = _scan_request(request)
+    for tag in auto_companions:
+        if tag not in companions:
+            companions.append(tag)
+
+    preferences = str(raw.get("preferences") or "").strip()
+    for tag in auto_prefs:
+        if tag not in preferences:
+            preferences = f"{preferences}、{tag}" if preferences else tag
+
+    companion_text = " ".join(companions)
+    elder = any(word in companion_text for word in _ELDER_WORDS)
+    child = any(word in companion_text for word in _CHILD_WORDS)
+    relaxed = "少走路" in preferences or "休闲" in preferences or any(
+        word in request for word in _RELAX_WORDS
+    )
+    indoor = "室内" in preferences or any(word in request for word in _INDOOR_WORDS)
+    slow_pace = elder or child or relaxed
+
     return {
+        "origin": str(raw.get("origin") or "").strip(),
         "city": city,
         "days": days,
         "people": people,
         "rooms": max(1, int(raw.get("rooms") or (people + 1) // 2)),
         "budget": budget,
-        "companions": list(companions),
-        "preferences": str(raw.get("preferences") or "").strip(),
+        "companions": companions,
+        "preferences": preferences,
         "start_date": start.isoformat(),
         "daily_hours": config.DAILY_HOURS,
         "food_per_person_per_day": float(raw.get("food_per_person_per_day") or config.FOOD_PER_PERSON_PER_DAY),
         "hotel_per_night": float(raw.get("hotel_per_night") or config.HOTEL_PER_NIGHT),
-        "request": str(raw.get("request") or "").strip(),
+        "request": request,
+        # 约束提取的落地口径：validator 与提示词共用，避免各说各话。
+        "elder": elder,
+        "child": child,
+        "relaxed": relaxed,
+        "indoor": indoor,
+        "slow_pace": slow_pace,
+        "max_attractions": 2 if slow_pace else config.MAX_ATTRACTIONS_PER_DAY,
+        "dwell_hours": 4 if slow_pace else 5,
+        "rest_required": slow_pace,
     }
 
 
@@ -121,16 +185,27 @@ def constraint_lines(c: dict[str, Any]) -> str:
     start = date.fromisoformat(c["start_date"])
     dates = [f"第{i + 1}天 {(start + timedelta(days=i)).isoformat()}" for i in range(c["days"])]
     companions = "/".join(c["companions"]) or "无"
-    return (
-        f"- 目的地城市：{c['city']}\n"
-        f"- 行程天数：{c['days']} 天（{'；'.join(dates)}）\n"
-        f"- 出行人数：{c['people']} 人，房间：{c['rooms']} 间\n"
+    lines = [
+        f"- 目的地城市：{c['city']}",
+        f"- 行程天数：{c['days']} 天（{'；'.join(dates)}）",
+        f"- 出行人数：{c['people']} 人，房间：{c['rooms']} 间",
         f"- 总预算上限：{c['budget']:.0f} 元（餐饮 {c['food_per_person_per_day']:.0f} 元/人/天，"
-        f"住宿 {c['hotel_per_night']:.0f} 元/间/晚）\n"
-        f"- 同行人：{companions}\n"
-        f"- 特殊偏好：{c['preferences'] or '无'}\n"
-        f"- 每日可用时长：{c['daily_hours']:.0f} 小时（09:00-18:00）"
-    )
+        f"住宿 {c['hotel_per_night']:.0f} 元/间/晚）",
+        f"- 同行人：{companions}",
+        f"- 特殊偏好：{c['preferences'] or '无'}",
+        f"- 每日可用时长：{c['daily_hours']:.0f} 小时（09:00-18:00）",
+    ]
+    if c.get("origin"):
+        lines.insert(0, f"- 出发地：{c['origin']}")
+    if c.get("slow_pace"):
+        lines.append(
+            f"- 体力与节奏（必须执行）：每天最多 {c['max_attractions']} 个景点，"
+            f"单日游览合计不超过 {c['dwell_hours']} 小时；"
+            "12:00-14:00 安排至少 45 分钟休息（type 填 rest），减少长距离步行"
+        )
+    if c.get("indoor"):
+        lines.append("- 室内优先：博物馆 / 美术馆 / 展馆至少占全部景点的一半，户外点位少排")
+    return "\n".join(lines)
 
 
 class TravelAgent:
@@ -488,9 +563,21 @@ class TravelAgent:
                 "以上天气与景点候选无需重复查询；仍需你调用 plan_route 查询所选景点之间的真实路程与耗时。\n\n"
             )
         return (
-            "【用户需求】\n"
+            "【用户需求（大致想法原文）】\n"
             f"{request or '按默认偏好规划'}\n\n"
-            "【结构化约束】\n"
+            "【从大致想法提取的约束（必须执行，不能只把原话抄一遍）】\n"
+            f"- 同行人：{'、'.join(c.get('companions') or []) or '无'}\n"
+            f"- 偏好：{c.get('preferences') or '无'}\n"
+            f"- 每日景点上限：{c.get('max_attractions', config.MAX_ATTRACTIONS_PER_DAY)} 个；"
+            f"单日游览合计上限：{c.get('dwell_hours', 5)} 小时\n"
+            + (
+                "- 慢节奏要求：12:00-14:00 必须安排至少 45 分钟休息（type 填 rest），"
+                "优先少走路、少换乘\n"
+                if c.get("slow_pace")
+                else ""
+            )
+            + ("- 室内要求：博物馆 / 美术馆 / 展馆至少占一半\n" if c.get("indoor") else "")
+            + "\n【结构化约束】\n"
             f"{constraint_lines(c)}{coords}\n\n"
             f"{prefetch_part}"
             "【工作方式】\n"
@@ -501,8 +588,10 @@ class TravelAgent:
             "4. 所有景点名称、坐标、票价、营业时间都必须来自工具或预取结果，禁止编造。\n"
             "5. 输出前先自查三件事：① 每个条目 end 必须晚于 start（住宿写“18:00-18:30 办理入住”，不要写 18:00-18:00）；"
             "② 单日「游览 + 交通 + 午休 1 小时」不超过当日可用时长——先加一遍游览时长，"
-            "超过 5 小时（带老人 4 小时）就直接删掉最远的那个景点；③ 降水概率高的日子不排户外景点。\n"
-            f"6. 最终按下面的模板输出行程 JSON（最多 {config.MAX_ATTRACTIONS_PER_DAY} 个景点/天，"
+            f"超过 {c.get('dwell_hours', 5)} 小时就直接删掉最远的那个景点；③ 降水概率高的日子不排户外景点。\n"
+            "6. 约束落地：按上面的每日景点上限排点（不是模板里的 3 个），慢节奏时把休息条目真的写进 items，"
+            "室内偏好时把室内景点排在前面。\n"
+            f"7. 最终按下面的模板输出行程 JSON（最多 {c.get('max_attractions', config.MAX_ATTRACTIONS_PER_DAY)} 个景点/天，"
             f"每天总时长不超过 {config.DAILY_HOURS:.0f} 小时）：\n{OUTPUT_SPEC}"
         )
 
@@ -597,9 +686,13 @@ class TravelAgent:
                     {"lng": c["lng"], "lat": c["lat"], "days": validator.weather_query_days(c)},
                 )
             )
+        keywords = list(self.PREFETCH_KEYWORDS)
+        if c.get("indoor"):
+            seen_kw = {kw for kw, _ in keywords}
+            keywords += [(kw, n) for kw, n in (("美术馆", 4), ("展览馆", 4)) if kw not in seen_kw]
         tasks += [
             ("search_poi", {"city": c["city"], "keyword": kw, "count": n})
-            for kw, n in self.PREFETCH_KEYWORDS
+            for kw, n in keywords
         ]
         started = time.time()
         weather: list[dict[str, Any]] = []
@@ -684,7 +777,13 @@ class TravelAgent:
         self.round_no = 0
         self._trace(
             f"{self._rp()}收到需求：{c['city']} {c['days']} 天 {c['people']} 人，预算 {c['budget']:.0f} 元，"
-            f"同行人 {('、'.join(c['companions']) or '无')}",
+            f"同行人 {('、'.join(c['companions']) or '无')}，偏好 {c.get('preferences') or '无'}"
+            + (
+                f"，已按慢节奏约束：每天 ≤{c['max_attractions']} 个景点 / 游览 ≤{c['dwell_hours']} 小时"
+                if c.get("slow_pace")
+                else ""
+            )
+            + ("，室内优先" if c.get("indoor") else ""),
             "constraint",
         )
         self._seed_city(c)

@@ -415,6 +415,8 @@ def _budget_block(pdf: _ItineraryPDF, c: dict[str, Any], budget: dict[str, Any])
     if cap > 0:
         diff = cap - total_val
         tail = f"预算上限 {_money(cap)}　结余 {_money(diff)}" if diff >= 0 else f"预算上限 {_money(cap)}　超出 {_money(-diff)}"
+        people = max(1, int(c.get("people") or 1))
+        tail += f"　人均 {_money(total_val / people)}"
         pdf.cell(0, 5, tail, new_x="LMARGIN", new_y="NEXT")
     if budget.get("route_note"):
         pdf.multi_cell(0, 5, _clean(budget.get("route_note")), new_x="LMARGIN", new_y="NEXT")

@@ -167,6 +167,10 @@ def validate(
     companion_text = " ".join(constraints.get("companions") or [])
     elder = any(word in companion_text for word in ELDER_WORDS)
     child = any(word in companion_text for word in CHILD_WORDS)
+    relaxed = bool(constraints.get("relaxed"))
+    slow_pace = elder or child or relaxed
+    max_attr = int(constraints.get("max_attractions") or config.MAX_ATTRACTIONS_PER_DAY)
+    dwell_hours = float(constraints.get("dwell_hours") or (4 if slow_pace else 5))
     seen: dict[str, list[str]] = {}
 
     for index, day in enumerate(days):
@@ -247,7 +251,7 @@ def validate(
             transport_min += minutes
             legs.append((prev_item.get("name") or "?", cur_item.get("name") or "?", round(minutes)))
         total_min = dwell + transport_min + config.LUNCH_MINUTES
-        dwell_cap = (4 if elder else 5) * 60  # 提示词里的软上限，只用于给配额建议，不作硬约束
+        dwell_cap = dwell_hours * 60  # 提示词里的软上限，只用于给配额建议，不作硬约束
         if attractions and total_min > config.DAILY_HOURS * 60:
             worst = max(legs, key=lambda leg: leg[2]) if legs else None
             detail = ""
@@ -255,9 +259,9 @@ def validate(
                 detail = f"其中最远一段「{worst[0]}→{worst[1]}」车程约 {worst[2]} 分钟；"
             gap = total_min - config.DAILY_HOURS * 60
             allowed_dwell = config.DAILY_HOURS * 60 - transport_min - config.LUNCH_MINUTES
-            # 与提示词的「游览 ≤5h（带老人 ≤4h）」取更严者，并留 10 分钟缓冲，
+            # 与提示词的「游览 ≤5h（慢节奏 ≤4h）」取更严者，并留 10 分钟缓冲，
             # 否则模型会贴着 8 小时上限反复微调（6.50h→6.17h 仍差 4 分钟）。
-            dwell_cap = (4 if elder else 5) * 60
+            dwell_cap = dwell_hours * 60
             target_dwell = max(0.0, min(allowed_dwell, dwell_cap) - 10)
             if worst:
                 per_item = target_dwell / max(1, len(attractions))
@@ -301,13 +305,13 @@ def validate(
                         f"{item.get('open_time')}，不在开放时段内，请调整"
                     )
 
-        # 同行人约束校验
-        if elder or child:
-            who = "老人" if elder else "小孩"
-            if len(attractions) > config.MAX_ATTRACTIONS_PER_DAY:
+        # 同行人 / 慢节奏约束校验
+        if slow_pace:
+            who = "老人" if elder else ("小孩" if child else "慢节奏")
+            if len(attractions) > max_attr:
                 issues.append(
                     f"{label}安排了 {len(attractions)} 个景点，同行有{who}，单日不要超过 "
-                    f"{config.MAX_ATTRACTIONS_PER_DAY} 个，请减少景点"
+                    f"{max_attr} 个，请减少景点"
                 )
             walk = sum(
                 item.get("walk_km")
@@ -322,9 +326,41 @@ def validate(
                     f"（单个景点通常 0.5-2 公里），不是景点之间的路程（景点间路程属于「交通方式」）；"
                     f"请把各景点的园内步行距离改成实际值，并去掉步行量大的景点"
                 )
+            # 休息不是口头承诺：必须有落在 11:30-14:30 内、不少于 45 分钟的条目。
+            rest_ok = False
+            for item in items:
+                kind = str(item.get("type") or "")
+                if kind not in ("rest", "food", "meal"):
+                    continue
+                start_min, end_min = parse_hm(item.get("start")), parse_hm(item.get("end"))
+                if start_min is None or end_min is None:
+                    continue
+                if end_min - start_min >= 45 and start_min <= 14 * 60 + 30 and end_min >= 11 * 60 + 30:
+                    rest_ok = True
+                    break
+            if not rest_ok:
+                issues.append(
+                    f"{label}是带老人 / 慢节奏行程，但没有 12:00-14:00 的休息安排；"
+                    "请加一条 type=rest 的条目（不少于 45 分钟），并相应减少景点或缩短停留"
+                )
 
         for item in attractions:
             seen.setdefault(item.get("name") or "", []).append(label)
+
+    # 室内偏好校验：偏好「室内为主」时，室内景点至少占一半
+    if constraints.get("indoor"):
+        all_attrs = [
+            item
+            for day in days
+            for item in (day.get("items") or [])
+            if item.get("type") == "attraction"
+        ]
+        indoor_count = sum(1 for item in all_attrs if is_indoor(item))
+        if len(all_attrs) >= 2 and indoor_count * 2 < len(all_attrs):
+            issues.append(
+                f"用户偏好室内为主，但 {len(all_attrs)} 个景点里只有 {indoor_count} 个室内；"
+                "请优先安排博物馆 / 美术馆 / 展馆（indoor 填 true），户外点位少排"
+            )
 
     # 重复景点校验
     for name, labels in seen.items():

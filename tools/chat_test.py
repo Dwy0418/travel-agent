@@ -176,13 +176,6 @@ check(comp_fn and 'popover_or_expander("⚙️ 精确设置' in comp_fn.group(0)
 check(comp_fn and '_constraint_fields("f_")' in comp_fn.group(0),
       "级联下拉就住在弹层里，不再摊进正文")
 check("def render_precise_panel" not in snap_src, "整页摊开那张表单卡的函数已删除")
-# AI 自动展开：服务端打不开 popover，只能在组件 iframe 里点一下触发按钮
-fx_fn = re.search(r"def _focus_scroll_html\(cls: str\)[\s\S]*?\n(?=def )", snap_src)
-check(fx_fn and ".st-key-composer" in fx_fn.group(0) and "b.click()" in fx_fn.group(0),
-      "自动展开靠点 popover 触发按钮：先在吸底卡里找「精确设置」那个按钮")
-check(fx_fn and "clicked=0" in fx_fn.group(0), "只点一次，别把刚展开的弹层又点回去")
-check(fx_fn and "scrollIntoView({behavior:'smooth',block:'center'})" in fx_fn.group(0),
-      "字段挂进 DOM 后滚到视野中间（平滑 + 居中）")
 head_body = snap_src[snap_src.index("def main() -> None:"):]
 check("render_precise_panel()" not in head_body, "main 里不再往正文插表单卡")
 
@@ -203,29 +196,57 @@ check(len(pre) == A.PAGE_SLOTS and set(pre) == set(need[:A.PAGE_SLOTS]),
 check(need and all("w=720" in u and "q=72" in u for u in need) and "w=900" not in css_md,
       "封面统一要 720px 小图，24 张的流量不超过从前 12 张", f"{len(need)} 张，样例={need[0][:60] if need else '无'}")
 
-at.session_state["_pending_chat"] = "10月15号和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜"
-at.run()
-assert not at.exception, f"app 抛异常：{at.exception}"
-check(at.session_state["f_city"] == "扬州市", "说城市后侧栏落到扬州市", str(at.session_state["f_city"]))
-check(at.session_state["f_province"] == "江苏省", "省份跟着反查出来", str(at.session_state["f_province"]))
-check(at.session_state["f_budget"] == 4000, "人均 2000 × 2 人 = 总预算 4000", str(at.session_state["f_budget"]))
-check(at.session_state["f_prefs_3"] is True, "「吃淮扬菜」勾上了美食打卡")
-check(at.session_state["f_companions_1"] is True, "「和老婆」勾上了情侣/夫妻")
-check("扬州市" in texts(at) and "还差点信息" not in texts(at), "管家复述里点名了城市")
-check(at.session_state["f_request"].startswith("10月15号"), "用户原话进了行程诉求", str(at.session_state["f_request"])[:40])
-scope = re.search(r'class="tv-bg-tag" data-scope="([^"]+)"', texts(at))
-check(scope and scope.group(1) == "扬州市", "说完城市背景立刻换到扬州", scope.group(1) if scope else "无")
+# 出发地：省 -> 市二级联动，默认「北京市 / 北京市」
+origin_prov = next((s for s in at.selectbox if s.key == "f_origin_province"), None)
+origin_city = next((s for s in at.selectbox if s.key == "f_origin"), None)
+check(origin_prov is not None and origin_prov.value == "北京市",
+      "出发省份默认北京市", str(origin_prov.value) if origin_prov else "无")
+check(origin_city is not None and origin_city.value == "北京市",
+      "出发城市默认北京市", str(origin_city.value) if origin_city else "无")
+check(len(A.regions.PROVINCES) == 34 and all(A.regions.cities_of(p) for p in A.regions.PROVINCES),
+      "34 个省级行政区都有下辖地级行政区", str(len(A.regions.PROVINCES)))
+check(A._origin_province_of("成都市") == "四川省" and A._origin_province_of("北京市") == "北京市",
+      "城市能反查回省份")
 
-at.session_state["_pending_chat"] = "改成5天，带上爸妈"
-at.run()
-assert not at.exception, f"app 抛异常：{at.exception}"
-end = at.session_state["f_end"]
-start = at.session_state["f_start"]
-check(isinstance(start, date) and isinstance(end, date) and (end - start).days == 4,
-      "「改成5天」只动天数不动日期", f"{start}~{end}")
-check(at.session_state["f_companions_2"] is True, "「带上爸妈」追加了带老人，没挤掉情侣/夫妻")
-check(at.session_state["f_city"] == "扬州市", "增量修改不会把已定的城市清空")
+at.selectbox(key="f_origin_province").set_value("四川省").run()
+assert not at.exception, f"换省份抛异常：{at.exception}"
+check(at.session_state["f_origin"] == "成都市",
+      "换成四川省后城市自动落到第一个地级市", str(at.session_state["f_origin"]))
+at.selectbox(key="f_origin").set_value("甘孜藏族自治州").run()
+assert not at.exception, f"选自治州抛异常：{at.exception}"
+check(at.session_state["f_origin"] == "甘孜藏族自治州", "任意地级行政区都能选到",
+      str(at.session_state["f_origin"]))
+at.selectbox(key="f_origin_province").set_value("北京市").run()
+check(at.session_state["f_origin"] == "北京市", "切回直辖市时城市跟着回落")
 
+# 大致想法：唯一自由输入区；同行人 / 偏好模块已删
+idea_widget = next((t for t in at.text_area if t.key == "f_idea"), None)
+check(idea_widget is not None, "「大致想法」输入区在 composer 里", str([t.key for t in at.text_area]))
+check("📝 大致想法" in texts(at), "大致想法有独立标题")
+captions = "\n".join(str(c.value) for c in at.caption)
+check("(如带老人或者想要室内景点多一点请说明)" in captions, "提示文案照需求写", captions[:40])
+field_labels = " ".join(str(c.label) for c in at.checkbox)
+check("独自出行" not in field_labels and "室内为主" not in field_labels,
+      "同行人 / 偏好的多选项已从表单删除", field_labels[:60])
+
+at.text_area(key="f_idea").set_value("带老人，想去室内博物馆，别太累").run()
+assert not at.exception, f"写大致想法抛异常：{at.exception}"
+derived = A._idea_constraints(at.session_state["f_idea"])
+check(derived["companions"] == ["带老人"], "从大致想法提取出带老人", str(derived["companions"]))
+check("室内为主" in derived["preferences"] and "少走路/休闲游" in derived["preferences"],
+      "室内与不想太累都识别成偏好", derived["preferences"])
+at.selectbox(key="f_province").set_value("北京市").run()
+at.selectbox(key="f_city").set_value("北京市").run()
+next(b for b in at.button if str(b.label) == "开始规划").click()
+at.run()
+assert not at.exception, f"点开始规划抛异常：{at.exception}"
+last = at.session_state.get("_last_payload") or {}
+check(last.get("request") == "带老人，想去室内博物馆，别太累"
+      and last.get("origin") == "北京市"
+      and last.get("companions") == ["带老人"],
+      "开始规划把出发地 / 原话 / 派生约束一起打包",
+      f"origin={last.get('origin')} request={last.get('request')!r}")
+check(last.get("people") == 2, "人数只认「出行人数」字段，不从文案猜", str(last.get("people")))
 # ---------------------------------------------------------------------------
 # 2b. 地标 -> 省市：「嘉应大学附近」必须认成广东梅州，且只填说到的那几栏
 # ---------------------------------------------------------------------------
@@ -252,59 +273,37 @@ check(sh.get("origin") == "上海市", "「从上海出发」认成出发地", s
 check(sh.get("city") == "杭州市", "出发段先摘掉，目的地认的是杭州不是上海", str(sh))
 check(A._parse_origin("随便找天出去玩")[0] is None, "没说出发地就不填，留着默认值")
 
-# 真界面：说一句话 -> 面板自己展开 + 城市选中 + 高亮滚动，且只在提交后发生
+# 真界面：大致想法里有地标 -> 开跑前把城市补进表单；已选目的地不被覆盖
 atj = new_at()
-seen_comp: list[str] = []
-_real_comp = A.st.components.v1.html
-
-
-def _spy_comp(src: str, *args: Any, **kw: Any) -> Any:
-    seen_comp.append(str(src))
-    return _real_comp(src, *args, **kw)
-
-
-A.st.components.v1.html = _spy_comp
-try:
-    atj.session_state["_pending_chat"] = "嘉应大学附近好玩的地方"
-    atj.run()
-    assert not atj.exception, f"自动填表抛异常：{atj.exception}"
-finally:
-    A.st.components.v1.html = _real_comp
-check(atj.session_state["f_city"] == "梅州市", "面板里的城市真的选到了梅州", str(atj.session_state["f_city"]))
-check(atj.session_state["f_province"] == "广东省", "省份跟着选中")
-check(any("b.click()" in s for s in seen_comp), "抽到字段才去点「精确设置」触发按钮", str(seen_comp)[:90])
-check(any(sb.key == "f_city" for sb in atj.selectbox), "城市下拉框在弹层里照样渲染（收起也在 DOM）")
-_scroll = next((s for s in seen_comp if "scrollIntoView" in s), "")
-check('.st-key-f_city' in _scroll, "滚过去停的第一个字段是城市，不是累计原话", _scroll[:80])
-check("_focus_key" not in atj.session_state, "高亮/滚动标记是一次性的，下一轮不再拽视野",
-      str(atj.session_state.get("_focus_key")))
-check("pfFlash" in texts(atj), "自动填过的字段带蓝框闪动")
-check(any("已按地标「嘉应大学」" in str(t.value) for t in atj.toast),
-      "管家回复走右下角轻提示，说清了是怎么定位的",
-      [str(t.value)[:40] for t in atj.toast])
-check("chat_message" not in comp_fn.group(0), "输入卡里不再渲染对话气泡")
-check(any("scrollIntoView" in s and ".st-key-f_city" in s for s in seen_comp),
-      "滚动是在组件 iframe 里对 parent.document 做的", next((s[:70] for s in seen_comp), "没发出组件"))
-check(any("behavior:'smooth'" in s and "block:'center'" in s for s in seen_comp),
-      "滚动参数按需求写：平滑 + 居中")
-check(atj.session_state.get("_filled_keys") is None, "高亮标记只消费一次，之后重跑不再闪",
-      str(atj.session_state.get("_filled_keys")))
-
+atj.text_area(key="f_idea").set_value("嘉应大学附近好玩的地方").run()
+next(b for b in atj.button if str(b.label) == "开始规划").click()
 atj.run()
-assert not atj.exception, f"再跑一轮抛异常：{atj.exception}"
-check(not any("pfFlash" in str(m.value) for m in atj.markdown[-1:]), "下一轮不再重复高亮")
+assert not atj.exception, f"地标自动填表抛异常：{atj.exception}"
+check(atj.session_state["f_city"] == "梅州市", "面板里的城市真的补到了梅州", str(atj.session_state["f_city"]))
+check(atj.session_state["f_province"] == "广东省", "省份跟着选中")
+settle(atj)
 
-# 「随便安排」这种没抽到结构化字段的：面板保持收起，按默认值走
 atk = new_at()
-atk.session_state["_pending_chat"] = "帮我随便安排一下"
+atk.selectbox(key="f_province").set_value("北京市").run()
+atk.selectbox(key="f_city").set_value("北京市").run()
+atk.text_area(key="f_idea").set_value("嘉应大学附近好玩的地方").run()
+next(b for b in atk.button if str(b.label) == "开始规划").click()
 atk.run()
-assert not atk.exception, f"空抽取抛异常：{atk.exception}"
-check("pfFlash" not in texts(atk), "啥都没抽到就不高亮、也不把弹层点开",
-      str(atk.session_state.get("_filled_keys")))
-check(not any("已按地标" in str(t.value) for t in atk.toast), "空抽取不谎报地标定位结果")
-check(any("还差点信息" in str(t.value) for t in atk.toast), "空抽取只提示还差什么",
-      [str(t.value)[:40] for t in atk.toast])
-check("f_request" not in str(atk.session_state.get("_focus_key") or ""), "原话累计串不算自动填的字段")
+assert not atk.exception, f"已选目的地时抛异常：{atk.exception}"
+check(atk.session_state["f_city"] == "北京市", "已经选好目的地时，文案不覆盖表单",
+      str(atk.session_state["f_city"]))
+settle(atk)
+
+# 「从上海出发去杭州」：出发地和目的地都从这句话补进表单
+atl = new_at()
+atl.text_area(key="f_idea").set_value("从上海出发去杭州玩3天").run()
+next(b for b in atl.button if str(b.label) == "开始规划").click()
+atl.run()
+assert not atl.exception, f"出发地自动填表抛异常：{atl.exception}"
+check(atl.session_state["f_origin"] == "上海市" and atl.session_state["f_city"] == "杭州市",
+      "出发地与目的地都能从大致想法补空",
+      f"{atl.session_state.get('f_origin')}/{atl.session_state.get('f_city')}")
+settle(atl)
 
 # ---------------------------------------------------------------------------
 # 3. 点卡片图片 -> 详情（要点 + 图集 + 视频）
@@ -355,18 +354,19 @@ check(body.count("class='dt-fit'>") == 2 and "class='dt-fit dt-fit-quote'" in bo
       "适配凑齐三行：人群 / 节奏 / 原话引用")
 check("适合" in body and ("节奏偏满" in body or "节奏偏松" in body), "前两行确实是人群和节奏")
 
-# 用户真的说过话之后，同一行要换成「你说过」并引用他打的原话
+# 用户真的在「大致想法」里写过字之后，同一行要换成「你说过」并引用原句
 chatted = new_at()
-chatted.session_state["_pending_chat"] = "10月15号和老婆去扬州玩3天"
+said = "带老人，想去室内博物馆"
+chatted.text_area(key="f_idea").set_value(said).run()
+next(b for b in chatted.button if str(b.label) == "开始规划").click()
 chatted.run()
-assert not chatted.exception, f"聊天后打开详情抛异常：{chatted.exception}"
+assert not chatted.exception, f"写想法后开跑抛异常：{chatted.exception}"
 chat_detail = next(str(b.key) for b in chatted.button if str(b.key).startswith("detail_"))
 chatted.button(key=chat_detail).click()
 chatted.run()
 body2 = texts(chatted)
 check("你说过：" in body2 and "这条线的设定" not in body2, "开过口之后才用「你说过」")
-# 原话在聊天气泡里也出现，所以必须贴着「你说过：」匹配才算真的引用对了
-check("你说过：10月15号和老婆去扬州玩3天" in body2, "引用的就是用户自己打的那句")
+check(f"你说过：{said}" in body2, "引用的就是用户自己写的那句")
 
 # 主点现在存在 CARD_STOPS 里，抠 desc 只是没登记时的兜底，所以断言换成三件事：
 # 每张卡都登记过、条目不能是整句评价、详情列出来的就是登记的那些。
@@ -543,9 +543,8 @@ check(not no_xy, "每张卡的目的地都登记了坐标", "、".join(dict.from
 out_box = [name for name, (lng, lat) in A.CITY_XY.items()
            if not (A._MAP_BOX[0] <= lng <= A._MAP_BOX[1] and A._MAP_BOX[2] <= lat <= A._MAP_BOX[3])]
 check(not out_box, "坐标全落在示意图范围内，点不会画到画布外", "、".join(out_box[:4]))
-check(all(name in A.CITY_XY for name in A.ORIGIN_CITIES), "出发地候选全都有坐标",
-      "、".join(n for n in A.ORIGIN_CITIES if n not in A.CITY_XY)[:40])
-check(A.ORIGIN_DEFAULT in A.ORIGIN_CITIES, "默认出发地在候选里")
+check(A.ORIGIN_DEFAULT in A.regions.cities_of("北京市"), "默认出发地在联动数据里")
+check(A.ORIGIN_DEFAULT in A.CITY_XY, "默认出发地有片头坐标")
 
 intro = A._intro_html(card, "上海市")
 check("dt-intro" in intro and "dt-route" in intro, "片头里有航线而不只是图片")
@@ -633,7 +632,7 @@ d_key = next(str(b.key) for b in at_d.button if str(b.key).startswith("detail_")
 at_d.button(key=d_key).click()
 at_d.run()
 assert not at_d.exception, f"打开详情弹窗抛异常：{at_d.exception}"
-check(any(str(sb.key) == "d_origin" for sb in at_d.selectbox), "详情页里也能选出发地")
+check(any(str(sb.key) == "f_origin" for sb in at_d.selectbox), "详情页里也能选出发地")
 
 # 卡片正面必须自带「几天几晚 + 价格」，否则挑起来心里没底
 face = A._card_face(card, 0)
@@ -675,11 +674,14 @@ check(bool(note), "套用后直接进了规划（离线清空密钥，报的是�
 check("1-10" not in note and "请先填写目的地" not in note,
       "规划失败的原因是缺密钥，不是条件不合法", note[:120])
 check("把「城市」选成具体城市" not in note, "不再是「请先选城市」那种没开跑的情况")
-prefs = [i for i in range(len(A.PREFERENCE_OPTIONS)) if at.session_state.get(f"f_prefs_{i}")]
-check(len(prefs) > 0, "套用后卡片里的偏好真的勾上了", str(prefs))
 # 天数早就不走滑块了，卡片说的几天必须落到「出发 + 回程」这两个日期上
 wanted_key = apply_key.split("preset_", 1)[1]
 preset = next(p for group in A.CITY_CARDS.values() for p in group if p["key"] == wanted_key)
+idea_text = str(at.session_state.get("f_idea") or "")
+comps = A.plain_companions(list(preset["payload"].get("companions") or []))
+check(bool(idea_text) and all(c in idea_text for c in comps)
+      and str(preset["payload"].get("request") or "") in idea_text,
+      "套用后卡片的人群 / 偏好 / 诉求合并进「大致想法」", idea_text[:50])
 span = (at.session_state["f_end"] - at.session_state["f_start"]).days + 1
 check(span == int(preset["payload"].get("days") or 0),
       f"套用「{preset['title']}」后天数为卡片说的 {preset['payload'].get('days')} 天", f"实际 {span} 天")

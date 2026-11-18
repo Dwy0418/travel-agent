@@ -26,7 +26,7 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from travel_agent import agent, config, llm, pdf_export, tools, zh_labels
+from travel_agent import agent, config, pdf_export, regions, tools, zh_labels
 
 from components.map_intro import map_intro
 
@@ -3287,27 +3287,9 @@ def render_key_trace(entries: list[dict[str, Any]], *, expanded: bool = False) -
 # ---------------------------------------------------------------------------
 # 任务 2：示例卡片与表单预填
 # ---------------------------------------------------------------------------
-def _companion_option(label: str) -> str | None:
-    """纯文本人群标签 -> 带 Emoji 的选项（按索引精确对应，避免包含误判）。"""
-    text = str(label or "").strip()
-    for idx, plain in enumerate(COMPANION_LABELS):
-        if plain == text:
-            return COMPANION_OPTIONS[idx]
-    for idx, plain in enumerate(COMPANION_LABELS):
-        if plain in text:
-            return COMPANION_OPTIONS[idx]
-    return None
-
-
-def _preference_option(label: str) -> str | None:
-    """纯文本偏好标签 -> 带 Emoji 的选项。"""
-    text = str(label or "").strip()
-    for idx, plain in enumerate(PREFERENCE_LABELS):
-        if plain == text or plain in text or text in plain:
-            return PREFERENCE_OPTIONS[idx]
-    return None
-
-
+# ---------------------------------------------------------------------------
+# 任务 2：示例卡片与表单预填
+# ---------------------------------------------------------------------------
 def _locate_city(city: str) -> tuple[str, str]:
     """按城市名反查 (国家, 省份)，用于示例卡片回填三级联动。"""
     target = str(city or "").strip()
@@ -3318,20 +3300,6 @@ def _locate_city(city: str) -> tuple[str, str]:
     first_country = next(iter(DESTINATION_TREE))
     first_province = next(iter(DESTINATION_TREE[first_country]))
     return first_country, first_province
-
-
-def _split_preferences(text: str) -> tuple[list[str], str]:
-    """把「少走路/休闲游、室内为主；想吃正宗螺蛳粉」拆成 (选项列表, 自由补充)。"""
-    raw = str(text or "")
-    extra = ""
-    if "；" in raw:
-        raw, extra = raw.split("；", 1)
-    picked: list[str] = []
-    for part in [p for p in raw.split("、") if p.strip()]:
-        opt = _preference_option(part)
-        if opt and opt not in picked:
-            picked.append(opt)
-    return picked, extra.strip()
 
 
 def _payload_to_state(payload: dict[str, Any]) -> None:
@@ -3348,32 +3316,36 @@ def _payload_to_state(payload: dict[str, Any]) -> None:
     st.session_state["f_country"] = country
     st.session_state["f_province"] = province
     st.session_state["f_city"] = city
-    if payload.get("origin"):
-        st.session_state["f_origin"] = payload["origin"]
+
+    origin = str(payload.get("origin") or "").strip()
+    if origin:
+        st.session_state["f_origin"] = origin
+        st.session_state["f_origin_province"] = _origin_province_of(origin)
 
     st.session_state["f_days"] = int(payload.get("days") or CONSTRAINT_DEFAULTS["days"])
     st.session_state["f_people"] = int(payload.get("people") or CONSTRAINT_DEFAULTS["people"])
     st.session_state["f_budget"] = int(float(payload.get("budget") or CONSTRAINT_DEFAULTS["budget"]))
 
-    prefs = payload.get("preferences_list")
-    note = payload.get("preferences_note")
-    if prefs is None:
-        prefs, parsed = _split_preferences(str(payload.get("preferences") or ""))
-        note = note if note is not None else parsed
-    wanted_prefs = [o for o in (_preference_option(p) for p in (prefs or [])) if o]
-    st.session_state["f_prefs"] = wanted_prefs
-    st.session_state["f_pref_note"] = str(note or "")
-    # checkbox_group 只认 f_prefs_i 这些逐选项 key，光写聚合键不会真的勾上
-    for index, option in enumerate(PREFERENCE_OPTIONS):
-        st.session_state[f"f_prefs_{index}"] = option in wanted_prefs
-
-    wanted_company = [
-        opt for opt in (_companion_option(tag) for tag in (payload.get("companions") or [])) if opt
-    ]
-    st.session_state["f_companions"] = wanted_company
-    for index, option in enumerate(COMPANION_OPTIONS):
-        st.session_state[f"f_companions_{index}"] = option in wanted_company
-    st.session_state["f_request"] = payload.get("request", CONSTRAINT_DEFAULTS["request"])
+    # 「大致想法」是同行人 / 偏好的唯一入口：卡片没有原句时，用标签拼一句自然语言。
+    idea = payload.get("idea")
+    request = str(payload.get("request") or "").strip()
+    if idea is None:
+        bits: list[str] = []
+        comps = plain_companions(list(payload.get("companions") or []))
+        if comps:
+            bits.append("、".join(comps))
+        prefs = payload.get("preferences")
+        if isinstance(prefs, (list, tuple, set)):
+            prefs_text = "、".join(str(p) for p in prefs)
+        else:
+            prefs_text = str(prefs or "").strip()
+        if prefs_text:
+            bits.append(prefs_text)
+        if request:
+            bits.append(request)
+        idea = "，".join(bits)
+    st.session_state["f_idea"] = str(idea or "")
+    st.session_state["f_request"] = request or str(idea or "")
     start = payload.get("start_date")
     span = max(0, int(payload.get("days") or CONSTRAINT_DEFAULTS["days"]) - 1)
     if not start:
@@ -3872,12 +3844,6 @@ CITY_XY: dict[str, tuple[float, float]] = {
     "大连市": (121.54, 38.95),
 }
 
-ORIGIN_CITIES = [
-    "北京市", "上海市", "广州市", "深圳市", "杭州市", "成都市", "重庆市", "南京市",
-    "武汉市", "西安市", "苏州市", "天津市", "青岛市", "济南市", "郑州市", "长沙市",
-    "南昌市", "合肥市", "福州市", "厦门市", "昆明市", "贵阳市", "南宁市", "大连市",
-    "乌鲁木齐市",
-]
 ORIGIN_DEFAULT = "北京市"
 
 
@@ -4107,11 +4073,9 @@ def _render_detail(preset: dict[str, Any]) -> None:
         _go_home()
 
     # 出发地要先实例化再读值：同一轮里读到的是刚选中的那个，片头的航线才画得对。
-    # 弹窗这份 key 是 d_origin，面板那份是 f_origin，两份由 apply_pending_origin() 收成同一真值。
-    ocol, _bcol = st.columns([1, 2.2], gap="small")
+    ocol, _bcol = st.columns([2, 1], gap="small")
     with ocol:
-        st.selectbox("出发地", ORIGIN_CITIES, key="d_origin")
-    origin = str(st.session_state.get("d_origin") or ORIGIN_DEFAULT)
+        origin = _origin_fields()
     # 原来这里是一段手绘 2D 矢量片头（_intro_html），现已由电影级 3D 开场取代。
     # 3D 片头只在「开始规划」跑完后播一次（见 _play_intro / _intro_pending），
     # 浏览详情页、换出发地都不会再触发，符合“只在开始规划时播放”的要求。
@@ -4281,54 +4245,6 @@ def seed_state(key: str, default: Any) -> None:
         st.session_state[key] = default
 
 
-def checkbox_group(
-    label: str,
-    options: list[str],
-    key_prefix: str,
-    *,
-    seed: list[str] | None = None,
-    columns: int = 2,
-    help_text: str = "",
-) -> list[str]:
-    """多选控件：用 checkbox 网格实现，**彻底不依赖 placeholder**。
-
-    为什么不再用 st.multiselect：
-    它未选中时会显示内置英文占位符 "Choose options"，而汉化用的
-    placeholder 参数是 1.26+ 才有的。低版本一旦剥掉该参数，英文就会
-    露出来。checkbox 在所有版本语法完全一致、天然没有占位符，选项
-    文字本身就是中文，因此任何版本都不可能显示英文。
-
-    :param seed: 需要预先勾选的选项（用于「调整条件」回填）
-    :param columns: 一行放几个，侧边栏建议 2 列
-    """
-    st.markdown(f"<div class='field-label'>{escape(label)}</div>", unsafe_allow_html=True)
-    if help_text:
-        st.caption(help_text)
-
-    seed_set = set(seed or [])
-    chosen: list[str] = []
-    row: list[Any] = []
-    for index, option in enumerate(options):
-        slot = index % columns
-        if slot == 0:
-            row = st.columns(columns)
-        key = f"{key_prefix}_{index}"
-        if key not in st.session_state:
-            st.session_state[key] = option in seed_set
-        if row[slot].checkbox(option, key=key):
-            chosen.append(option)
-    return chosen
-
-
-def _current_group(prefix: str, name: str, options: list[str]) -> list[str]:
-    """从 session_state 读出当前勾选项，供「调整条件」面板回填。"""
-    out: list[str] = []
-    for index, option in enumerate(options):
-        if st.session_state.get(f"{prefix}{name}_{index}"):
-            out.append(option)
-    return out
-
-
 def _sync_select(key: str, options: list[str], prefer: str | None = None) -> None:
     """下拉框取值兜底：当前值不在候选里就重置，避免 Streamlit 因非法默认值报错。"""
     if not options:
@@ -4337,20 +4253,33 @@ def _sync_select(key: str, options: list[str], prefer: str | None = None) -> Non
         st.session_state[key] = prefer if prefer in options else options[0]
 
 
-def _companion_picker(prefix: str, seed: list[str] | None = None) -> list[str]:
-    """同行人：checkbox 网格多选，10 类人群（含团建 / 孕妇 / 无障碍）。
+def _origin_province_of(city: str) -> str:
+    """按城市名反查出发省份；查不到就落到默认省份（北京市）。"""
+    name = str(city or "").strip()
+    for province, cities in regions.PROVINCE_CITIES.items():
+        if name in cities:
+            return province
+    return regions.PROVINCES[0]
 
-    刻意不使用 st.pills（需较新版本，低版本 AttributeError），
-    也不使用 st.multiselect（未选中时显示内置英文 "Choose options"）。
+
+def _origin_fields() -> str:
+    """出发地：省份 -> 城市二级联动（34 个省级行政区 / 约 340 个地级行政区）。
+
+    两级都用全局 f_ 键：详情页、精确设置、结果页调整面板共用同一个出发地，
+    换一处三处同步，不会出现「界面北京、片头上海」。
     """
-    return checkbox_group(
-        "同行人",
-        COMPANION_OPTIONS,
-        key_prefix=f"{prefix}companions",
-        seed=seed or [],
-        columns=2,
-        help_text="可多选，方便我安排节奏与体力消耗",
-    )
+    city_now = str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
+    if "f_origin_province" not in st.session_state:
+        st.session_state["f_origin_province"] = _origin_province_of(city_now)
+    _sync_select("f_origin_province", regions.PROVINCES, ORIGIN_DEFAULT)
+    pcol, ccol = st.columns(2, gap="small")
+    with pcol:
+        province = st.selectbox("出发省份", regions.PROVINCES, key="f_origin_province")
+    with ccol:
+        options = regions.cities_of(province) or [ORIGIN_DEFAULT]
+        _sync_select("f_origin", options, ORIGIN_DEFAULT)
+        st.selectbox("出发城市", options, key="f_origin")
+    return str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
 
 
 def plain_companions(values: list[str]) -> list[str]:
@@ -4377,12 +4306,10 @@ CONSTRAINT_DEFAULTS: dict[str, Any] = {
     "province": UNLIMITED_PROVINCE,
     "city": UNLIMITED_CITY,
     "days": 2,
+    # 人数只有一个口径：这个字段。同行人/偏好不再参与人数与预算计算。
     "people": 2,
     "budget": 3000,
-    "prefs": [],        # 带 Emoji 的偏好选项列表
-    "pref_note": "",    # 其他补充需求（自由填写）
-    "companions": [],
-    "request": "想去有当地文化特色的地方，节奏轻松些",
+    "idea": "",
 }
 
 
@@ -4409,11 +4336,11 @@ def _span_days(start_day: date, end_day: date) -> int:
 
 
 def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> dict[str, Any]:
-    """渲染三组约束控件，返回 payload。
+    """渲染结构化约束控件（出发地 / 目的地 / 日期 / 人数 / 预算），返回 payload。
 
-    payload 除 Agent 需要的 8 个字段外，另附 country / province /
-    preferences_list / preferences_note 等纯 UI 字段用于回填；
-    _PlanJob 会用 agent_payload() 裁掉它们，保证送给 Agent 的仍是原来那 8 个。
+    「大致想法」不在这里：它由 composer 与结果页调整面板各自渲染，
+    这样首页不用展开弹层就能表达诉求。payload 里只保留结构化字段，
+    Agent 需要的 companions / preferences / request 由大致想法派生。
     """
     base: dict[str, Any] = dict(CONSTRAINT_DEFAULTS)
     if seed:
@@ -4422,12 +4349,11 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
     def k(name: str) -> str:
         return f"{prefix}{name}"
 
-    # ---------------- 📍 基础信息：出发地 + 国家 -> 省份 -> 城市 ----------------
+    # ---------------- 📍 基础信息：出发地 -> 目的地 ----------------
     st.markdown("<div class='sec-title'>📍 基础信息</div>", unsafe_allow_html=True)
 
-    # 出发地排在目的地前面：片头的航线、机票/高铁的起算点都看它
-    _sync_select(k("origin"), ORIGIN_CITIES, base.get("origin") or ORIGIN_DEFAULT)
-    origin = st.selectbox("出发地", ORIGIN_CITIES, key=k("origin"), help="开场航线从这个城市起飞")
+    st.markdown("<div class='field-label'>出发地</div>", unsafe_allow_html=True)
+    origin = _origin_fields()
 
     country_options = list(DESTINATION_TREE)
     _sync_select(k("country"), country_options, base.get("country"))
@@ -4482,7 +4408,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         f"{start_date:%m月%d日} 出发，{end_date:%m月%d日} 返程"
     )
 
-    # ---------------- 👥 人员与预算：取消上限 ----------------
+    # ---------------- 👥 人员与预算：人数是唯一口径 ----------------
     st.markdown("<hr class='sec-line'>", unsafe_allow_html=True)
     st.markdown("<div class='sec-title'>👥 人员与预算</div>", unsafe_allow_html=True)
 
@@ -4493,7 +4419,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         max_value=999999,
         step=None,  # 不显示加减号：想填多少直接敲
         key=k("people"),
-        help="点输入框直接键入数字；公司团建等大团体可填更大人数",
+        help="行程人数、预算与人均都按这个数算；同行人由「大致想法」描述，不再单独勾选",
     )
 
     seed_state(k("budget"), base["budget"])
@@ -4506,46 +4432,6 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         help="点输入框直接键入数字，例如 3000",
     )
 
-    companions = _companion_picker(prefix, seed=list(base["companions"]))
-
-    # ---------------- 🎯 偏好设定：多选 + 自由补充 ----------------
-    st.markdown("<hr class='sec-line'>", unsafe_allow_html=True)
-    st.markdown("<div class='sec-title'>🎯 偏好设定</div>", unsafe_allow_html=True)
-
-    preferences = checkbox_group(
-        "特殊偏好",
-        PREFERENCE_OPTIONS,
-        key_prefix=k("prefs"),
-        seed=list(base["prefs"]),
-        columns=2,
-        help_text="可多选；没找到合适的，可在下方「其他补充需求」里自由填写",
-    )
-
-    seed_state(k("pref_note"), base["pref_note"])
-    pref_note = st.text_input(
-        "其他补充需求",
-        key=k("pref_note"),
-        placeholder="未在以上选项中找到的偏好，请填在这里...",
-    )
-
-    seed_state(k("request"), base["request"])
-    request = st.text_area(
-        "行程整体诉求",
-        key=k("request"),
-        height=88,
-        placeholder="例如：想去有当地文化特色的地方，节奏轻松些",
-    )
-
-    labels = [
-        PREFERENCE_LABELS[PREFERENCE_OPTIONS.index(p)]
-        for p in preferences
-        if p in PREFERENCE_OPTIONS
-    ]
-    pref_text = "、".join(labels)
-    note = pref_note.strip()
-    if note:
-        pref_text = f"{pref_text}；{note}" if pref_text else note
-
     return {
         "origin": origin,
         "country": country,
@@ -4556,11 +4442,6 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         "budget": float(budget),
         "start_date": start_date.isoformat(),
         "end": end_date.isoformat(),
-        "companions": plain_companions(companions),
-        "preferences": pref_text,
-        "preferences_list": list(preferences),
-        "preferences_note": note,
-        "request": request,
     }
 
 
@@ -4680,7 +4561,8 @@ _COMPANION_KEYS: list[tuple[str, list[str]]] = [
     ("♿ 需要无障碍设施", ["轮椅", "无障碍", "行动不便"]),
 ]
 _PREFERENCE_KEYS: list[tuple[str, list[str]]] = [
-    ("🚶 少走路/休闲游", ["少走路", "休闲", "轻松", "慢一点", "节奏慢", "不赶", "躺平", "度假"]),
+    ("🚶 少走路/休闲游", ["少走路", "休闲", "轻松", "慢一点", "节奏慢", "不赶", "躺平", "度假",
+                          "不想太累", "别太累", "太累", "累"]),
     ("🏛️ 室内为主", ["室内", "博物馆", "展览", "美术馆", "避雨", "下雨"]),
     ("📸 出片率高", ["拍照", "出片", "网红", "摄影", "机位", "好看的照片"]),
     ("🍲 美食打卡", ["吃", "美食", "小吃", "餐厅", "菜", "馆子", "夜宵", "烧烤", "馆子"]),
@@ -4785,7 +4667,7 @@ def _parse_origin(text: str) -> tuple[str | None, str]:
     if not m:
         return None, text
     for alias, hit in sorted(_CITY_ALIAS.items(), key=lambda kv: -len(kv[0])):
-        if len(alias) >= 2 and alias in m.group(1) and hit[2] in ORIGIN_CITIES:
+        if len(alias) >= 2 and alias in m.group(1):
             return hit[2], (text[: m.start()] + text[m.end():]).strip()
     return None, text
 
@@ -4857,138 +4739,57 @@ def parse_plan_text(text: str) -> dict[str, Any]:
     return found
 
 
-_LLM_PARSE_HINT = (
-    "你是旅行需求解析器，把用户的口语需求抽成 JSON，只输出 JSON 本身。"
-    "你同时是中国地理专家：用户提到地标（大学、学院、机场、高铁站、商圈、景区、园区）时，"
-    "必须换算成它所在的省份与城市后再填，例如「嘉应大学附近」→ province=广东省、city=梅州市，"
-    "「乌镇」→ 浙江省嘉兴市；拿不准就填 null，不要编。"
-    "字段：city(城市名)、province(省份名)、days(整数天数)、people(整数人数)、"
-    f"budget(总预算数字，人民币)、per_person(人均预算数字)、start_date(YYYY-MM-DD)、"
-    f"origin(出发城市名)、"
-    f"companions(数组，只能取：{'、'.join(COMPANION_LABELS)})、"
-    f"preferences(数组，只能取：{'、'.join(PREFERENCE_LABELS)})。"
-    "用户没说的字段一律填 null，不要替人猜；相对日期请换算成具体日期。"
-)
+def _apply_idea_autofill() -> None:
+    """开跑前用「大致想法」补空：写了地标/城市就认，写「从X出发」就改出发地。
 
-
-def _llm_plan(text: str) -> dict[str, Any] | None:
-    """让 DeepSeek 补规则解析漏掉的说法；没配密钥或失败就返回 None，规则结果照常生效。"""
-    if not config.DEEPSEEK_API_KEY:
-        return None
-    try:
-        message, _ = llm.chat(
-            [
-                {"role": "system", "content": f"{_LLM_PARSE_HINT} 今天是 {date.today().isoformat()}。"},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.0,
-            max_tokens=300,
-        )
-        body = re.search(r"\{.*\}", str(message.get("content") or ""), re.S)
-        if not body:
-            return None
-        data = json.loads(body.group(0))
-    except Exception:  # noqa: BLE001 - 解析失败退回规则结果，不打断对话
-        return None
-
-    found: dict[str, Any] = {}
-    if data.get("city"):
-        city = str(data["city"])
-        country, province = _locate_city(city)
-        found["country"], found["province"], found["city"] = country, province, city
-    elif data.get("province"):
-        hit = _pick_name(str(data["province"]), _PROV_ALIAS)
-        if hit:
-            found["country"], found["province"] = hit
-    for key in ("days", "people", "budget", "per_person"):
-        value = data.get(key)
-        if isinstance(value, (int, float)) and value > 0:
-            found[key] = float(value) if key == "budget" else int(value)
-    # 出发地只认候选城市表：模型说「家」或说错名字时宁可忽略，别让下拉框出现非法值
-    if str(data.get("origin") or "").strip() in ORIGIN_CITIES:
-        found["origin"] = str(data["origin"]).strip()
-    raw_date = str(data.get("start_date") or "")
-    if len(raw_date) == 10:
-        try:
-            found["start"] = date.fromisoformat(raw_date)
-        except ValueError:
-            pass
-    companions = [_companion_option(tag) for tag in (data.get("companions") or [])]
-    if any(companions):
-        found["companions"] = [c for c in companions if c]
-    prefs = [_preference_option(tag) for tag in (data.get("preferences") or [])]
-    if any(prefs):
-        found["prefs"] = [p for p in prefs if p]
-    return found or None
-
-
-def _merge_plan(rule: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
-    """规则结果打底，模型结果补空缺；两边都提到的取模型（它更懂上下文），列表取并集。"""
-    merged = dict(rule)
-    for key, value in (model or {}).items():
-        if isinstance(value, list):
-            merged[key] = list(dict.fromkeys(list(merged.get(key) or []) + value))
-        elif key not in merged:
-            merged[key] = value
-    return merged
-
-
-def _patch_state(found: dict[str, Any]) -> None:
-    """把解析结果增量写进 f_* 状态（只能在控件实例化前调用）。"""
-    if not found:
+    只在点「开始规划」那一轮跑，用户正常编辑文字时表单不动；
+    用户已经选好目的地时不覆盖，表单始终是主口径。
+    """
+    idea = str(st.session_state.get("f_idea") or "").strip()
+    if not idea:
         return
-    today = date.today()
-    if found.get("origin"):
-        st.session_state["f_origin"] = found["origin"]
-    if found.get("city"):
-        country, province = found.get("country"), found.get("province")
-        if not (country and province):
-            country, province = _locate_city(found["city"])
-        st.session_state["f_country"] = country
-        st.session_state["f_province"] = province
-        st.session_state["f_city"] = found["city"]
-    elif found.get("province"):
-        st.session_state["f_country"] = found["country"]
-        st.session_state["f_province"] = found["province"]
-        st.session_state["f_city"] = UNLIMITED_CITY
+    found = parse_plan_text(idea)
+    city_now = st.session_state.get("f_city")
+    if city_now in (None, "", UNLIMITED_CITY):
+        if found.get("city"):
+            province = found.get("province") or ""
+            st.session_state["f_country"] = found.get("country") or _country_of(province)
+            st.session_state["f_province"] = province
+            st.session_state["f_city"] = found["city"]
+        elif found.get("province"):
+            st.session_state["f_country"] = found.get("country") or _country_of(found["province"])
+            st.session_state["f_province"] = found["province"]
+    origin = str(found.get("origin") or "").strip()
+    if origin:
+        st.session_state["f_origin"] = origin
+        st.session_state["f_origin_province"] = _origin_province_of(origin)
 
-    people = found.get("people") or st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"])
-    if found.get("per_person"):
-        st.session_state["f_budget"] = int(round(float(found["per_person"]) * max(1, int(people))))
-    elif found.get("budget"):
-        st.session_state["f_budget"] = int(round(float(found["budget"])))
-    if found.get("people"):
-        st.session_state["f_people"] = int(found["people"])
 
-    days = found.get("days")
-    start = found.get("start")
-    end = found.get("end")
-    if start:
-        st.session_state["f_start"] = start
-    if end:
-        st.session_state["f_end"] = end
-    elif days and start:
-        st.session_state["f_end"] = start + timedelta(days=int(days) - 1)
-    elif days and isinstance(st.session_state.get("f_start"), date):
-        st.session_state["f_end"] = st.session_state["f_start"] + timedelta(days=int(days) - 1)
+def _idea_constraints(text: str) -> dict[str, Any]:
+    """从「大致想法」里抽同行人与偏好：规则解析兜底，后端模型还会再核一遍。
 
-    for index, option in enumerate(COMPANION_OPTIONS):
-        key = f"f_companions_{index}"
-        if option in (found.get("companions") or []):
-            st.session_state[key] = True
-    for index, option in enumerate(PREFERENCE_OPTIONS):
-        key = f"f_prefs_{index}"
-        if option in (found.get("prefs") or []):
-            st.session_state[key] = True
+    人数不从这里派生：界面上的「出行人数」是唯一口径，避免出现
+    「界面 2 人、预算按 3 人算」的两套数字。
+    """
+    found = parse_plan_text(text)
+    companions = plain_companions(list(found.get("companions") or []))
+    prefs = [p for p in (found.get("prefs") or []) if p in PREFERENCE_OPTIONS]
+    labels = [PREFERENCE_LABELS[PREFERENCE_OPTIONS.index(p)] for p in prefs]
+    return {
+        "companions": companions,
+        "preferences": "、".join(labels),
+        "preferences_list": prefs,
+        "request": str(text or "").strip(),
+    }
 
 
 def _state_snapshot() -> dict[str, Any]:
-    """控件还没渲染时，从 session_state 读出一份当前约束用于复述。"""
+    """控件还没渲染时，从 session_state 读出一份当前约束。"""
     start = st.session_state.get("f_start")
     end = st.session_state.get("f_end")
     days = _span_days(start, end) if isinstance(start, date) and isinstance(end, date) else 0
     return {
-        "origin": st.session_state.get("f_origin", CONSTRAINT_DEFAULTS["origin"]),
+        "origin": str(st.session_state.get("f_origin") or ORIGIN_DEFAULT),
         "country": st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"]),
         "province": st.session_state.get("f_province", CONSTRAINT_DEFAULTS["province"]),
         "city": st.session_state.get("f_city", CONSTRAINT_DEFAULTS["city"]),
@@ -4997,28 +4798,19 @@ def _state_snapshot() -> dict[str, Any]:
         "days": days,
         "people": st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"]),
         "budget": st.session_state.get("f_budget", CONSTRAINT_DEFAULTS["budget"]),
-        "companions": _current_group("f_", "companions", COMPANION_OPTIONS),
-        "prefs": _current_group("f_", "prefs", PREFERENCE_OPTIONS),
-        "request": st.session_state.get("f_request", CONSTRAINT_DEFAULTS["request"]),
+        "idea": str(st.session_state.get("f_idea", CONSTRAINT_DEFAULTS["idea"]) or ""),
     }
 
 
 def _payload_from_state() -> dict[str, Any]:
     """底部输入卡在脚本末尾渲染，规划那一轮要用的条件只能从 session_state 取。
 
-    字段与 _constraint_fields() 的返回保持一致，只是来源换成状态而不是控件返回值。
+    结构化字段来自控件；同行人 / 偏好 / 诉求由「大致想法」派生，
+    原始句子也原样进 request，发给后端再让模型提取一次。
     """
     snap = _state_snapshot()
-    prefs = list(snap["prefs"])
-    labels = [
-        PREFERENCE_LABELS[PREFERENCE_OPTIONS.index(p)]
-        for p in prefs
-        if p in PREFERENCE_OPTIONS
-    ]
-    note = str(st.session_state.get("f_pref_note", CONSTRAINT_DEFAULTS["pref_note"]) or "").strip()
-    pref_text = "、".join(labels)
-    if note:
-        pref_text = f"{pref_text}；{note}" if pref_text else note
+    idea = str(snap["idea"] or "").strip()
+    derived = _idea_constraints(idea)
 
     min_date, max_date = _date_bounds()
     start = snap["start"] if isinstance(snap["start"], date) else date.today() + timedelta(days=1)
@@ -5036,231 +4828,62 @@ def _payload_from_state() -> dict[str, Any]:
         "budget": float(snap["budget"] or CONSTRAINT_DEFAULTS["budget"]),
         "start_date": start.isoformat(),
         "end": end.isoformat(),
-        "companions": plain_companions(snap["companions"]),
-        "preferences": pref_text,
-        "preferences_list": prefs,
-        "preferences_note": note,
-        "request": snap["request"],
+        "idea": idea,
+        "companions": derived["companions"],
+        "preferences": derived["preferences"],
+        "preferences_list": derived["preferences_list"],
+        "request": derived["request"],
     }
 
 
-def _reply_text(found: dict[str, Any], snapshot: dict[str, Any], *, used_model: bool) -> str:
-    """管家复述：把「我听懂了什么」和「还差什么」一次说清，用户只管纠正。"""
-    city = snapshot["city"]
-    lines: list[str] = []
-    if city and city != UNLIMITED_CITY:
-        where = f"**{city}**（{snapshot['province']}）"
-    elif snapshot["province"] != UNLIMITED_PROVINCE:
-        where = f"**{snapshot['province']}**，城市还没定"
-    else:
-        where = "全国范围，目的地还没定"
-    lines.append(f"- 去哪：{where}")
-    if snapshot["days"]:
-        lines.append(
-            f"- 时间：{snapshot['start']:%m月%d日} 出发，玩 {snapshot['days']} 天"
-            f"（{snapshot['end']:%m月%d日} 返程）"
+def _idea_input(key: str) -> str:
+    """统一的「大致想法」输入区：标题 + 提示 + 自由文本。
+
+    首页 composer 用 f_idea，结果页调整面板用 q_idea；两处文案一致，
+    同行人与偏好都由这句话派生，不再让用户逐项勾选。
+    """
+    st.markdown("<div class='sec-title'>📝 大致想法</div>", unsafe_allow_html=True)
+    st.caption("(如带老人或者想要室内景点多一点请说明)")
+    seed_state(key, str(st.session_state.get("f_idea") or CONSTRAINT_DEFAULTS["idea"]))
+    return str(
+        st.text_area(
+            "大致想法",
+            key=key,
+            height=84,
+            label_visibility="collapsed",
+            placeholder="例如：带老人，想多看博物馆，节奏别太赶",
         )
-    else:
-        lines.append("- 时间：还没定，先按默认日期占位")
-    people = int(snapshot["people"] or 0)
-    budget = float(snapshot["budget"] or 0)
-    per = f"，人均约 {budget / people:.0f}" if people and budget else ""
-    lines.append(f"- 人数与预算：{people} 人 · 总预算 {budget:.0f} 元{per}")
-    tags = [t.split(" ", 1)[1] if " " in t else t for t in snapshot["companions"]]
-    lines.append(f"- 同行人：{'、'.join(tags)}" if tags else "- 同行人：还没说（默认按 2 人成人安排）")
-    prefs = [t.split(" ", 1)[1] if " " in t else t for t in snapshot["prefs"]]
-    lines.append(f"- 偏好：{'、'.join(prefs)}" if prefs else "- 偏好：还没提到")
-
-    gaps: list[str] = []
-    if not city or city == UNLIMITED_CITY:
-        gaps.append("具体城市")
-    if not found.get("start"):
-        gaps.append("出发日期")
-    if not found.get("days"):
-        gaps.append("玩几天")
-    tail = f"还差点信息：{'、'.join(gaps)}。" if gaps else "条件齐了，可以直接开始规划。"
-    who = "我让模型又核了一遍，" if used_model and config.DEEPSEEK_API_KEY else ""
-    landmark = str(found.get("landmark") or "")
-    located = (
-        f"已按地标「{landmark}」为您定位到 {_stem(snapshot['province'])}{_stem(city)}，"
-        "省市都填进「精确设置」了，看看还要改什么？\n\n"
-        if landmark else ""
-    )
-    return (
-        "好的，" + who + "我按这样理解：\n\n"
-        + "\n".join(lines)
-        + f"\n\n{located}{tail}要改就直接说（例如「预算改成 6000」「带上爸妈」），"
-        "或者展开「精确设置」逐项勾。"
-    )
-
-
-def _chat_log() -> list[dict[str, str]]:
-    """管家与用户的对话记录。开场白不再入日志：输入卡自己已经说明了怎么用。"""
-    return st.session_state.setdefault("chat_log", [])
-
-
-_FIELD_PRIORITY = (
-    "f_city", "f_province", "f_country", "f_origin",
-    "f_start", "f_end", "f_people", "f_budget", "f_prefs", "f_companions",
-)
-# 原话累计串每说一句都会变，不算「抽到了结构化字段」，否则「随便去哪玩」也会把面板弹开
-_FIELD_IGNORED = frozenset({"f_request"})
-# Streamlit 把控件 key 直接拼成 .st-key-<key> 类名，所以能进 CSS 选择器的只有这一种形状
-_FIELD_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-
-
-def _touched_fields(before: dict[str, Any]) -> list[str]:
-    """对比 AI 填表前后的 f_* 状态，按「用户最先看的排前面」返回被改动的控件 key。
-
-    返回的就是 Streamlit 给控件加的 .st-key-<key> 类名，滚动与高亮直接用它定位。
-    """
-    now = {k: v for k, v in st.session_state.items() if k.startswith("f_")}
-    touched = [k for k, value in now.items()
-               if k not in _FIELD_IGNORED and before.get(k) != value]
-
-    def rank(key: str) -> tuple[int, str]:
-        head = re.sub(r"_\d+$", "", key) if re.fullmatch(r"f_(prefs|companions)_\d+", key) else key
-        return (_FIELD_PRIORITY.index(head) if head in _FIELD_PRIORITY else 99, key)
-
-    return sorted(touched, key=rank)
-
-
-def apply_pending_origin() -> None:
-    """出发地全页只有一份真值 _origin_truth，面板 f_origin 和弹窗 d_origin 都只是镜像。
-
-    哪个镜像和真值对不上，就说明那一侧刚被改过：先收成新的真值，再把两边都写齐。
-    必须在控件实例化之前跑 —— 同一轮里改已渲染控件的 session_state 值，Streamlit 会直接抛异常。
-    """
-    truth = str(st.session_state.get("_origin_truth") or ORIGIN_DEFAULT)
-    for key in ("f_origin", "d_origin"):
-        got = str(st.session_state.get(key) or "")
-        if got and got != truth:
-            truth = got
-    st.session_state["_origin_truth"] = truth
-    st.session_state["f_origin"] = truth
-    st.session_state["d_origin"] = truth
-
-
-def apply_pending_chat() -> None:
-    """消费上一轮暂存的对话：解析 -> 写回条件 -> 生成管家回复（必须在控件实例化前）。"""
-    text = st.session_state.pop("_pending_chat", None)
-    if not text:
-        return
-    # 用户开口了就把详情关掉，管家的话别压在弹窗底下
-    st.session_state["_open_detail"] = ""
-    log = _chat_log()
-    log.append({"role": "user", "content": str(text)})
-
-    rule = parse_plan_text(str(text))
-    model = _llm_plan(str(text))
-    found = _merge_plan(rule, model)
-    before = {k: v for k, v in st.session_state.items() if k.startswith("f_")}
-    _patch_state(found)
-
-    lines = st.session_state.setdefault("ask_lines", [])
-    lines.append(str(text))
-    st.session_state["f_request"] = "；".join(lines[-3:])
-
-    # 抽到了东西才动手：让 _filled_field_fx 把「精确设置」弹层点开、滚到第一个被改的字段并闪一下。
-    # 「随便去哪玩」这种一句话里啥都没有的，changed 为空，弹层保持收起、按默认值走。
-    changed = _touched_fields(before)
-    if changed:
-        st.session_state["_filled_keys"] = changed
-        st.session_state["_focus_key"] = changed[0]
-
-    reply = _reply_text(found, _state_snapshot(), used_model=bool(model))
-    log.append({"role": "assistant", "content": reply})
-    # 吸底卡里不放对话记录（只留操作区），管家的话改成右下角几秒的轻提示，
-    # 取最该看见的那一句：地标定位结果，没有地标就说还差什么。
-    note = next((p for p in reply.split("\n\n") if p.startswith("已按地标")), "")
-    st.toast(note or reply.split("\n\n")[-1], icon="🧭")
-
-
-def _filled_field_fx() -> None:
-    """AI 刚填过的字段：蓝框闪一下 + 把第一个滚到视野中间。
-
-    st.markdown 吃 <script>，所以滚动借组件 iframe 执行：它是 srcdoc，和主站同源，
-    能拿到 parent.document（实测过），按 Streamlit 给控件加的 .st-key-<key> 定位。
-    标记只消费一次，否则之后每次重跑都会重新闪一遍、把视野拽走。
-    """
-    keys = [str(k) for k in (st.session_state.pop("_filled_keys", None) or []) if _FIELD_KEY.match(str(k))]
-    focus = str(st.session_state.pop("_focus_key", None) or "")
-    if keys:
-        sel = ", ".join(f".st-key-{k}" for k in keys)
-        st.markdown(
-            "<style>"
-            "@keyframes pfFlash { 0%,100% { box-shadow: 0 0 0 0 rgba(56,189,248,0) }"
-            " 18%,58% { box-shadow: 0 0 0 2px rgba(56,189,248,.92) } }"
-            f"{sel} {{ border-radius: 10px; animation: pfFlash 1.5s ease .2s 1; }}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
-    if not _FIELD_KEY.match(focus):
-        return
-    st.components.v1.html(_focus_scroll_html(f"st-key-{focus}"), height=1)
-
-
-def _focus_scroll_html(cls: str) -> str:
-    """在组件 iframe 里把主文档的 cls 元素滚到视野中间（cls 已由 _FIELD_KEY 校验）。
-
-    「精确设置」是 st.popover，服务端没法把它打开，所以这里先在吸底卡里找那个触发
-    按钮点一下（Baseweb 的弹层是纯前端状态，一次 click 就展开），再轮询等弹层里的
-    字段挂进 DOM，出现后滚到视野中间。只点一次：再点就把刚展开的弹层又收回去了。
-    """
-    js = (
-        "(function(){var d=parent.document,k=0,clicked=0;"
-        "function trig(){var box=d.querySelector('.st-key-composer');if(!box)return null;"
-        "var bs=box.querySelectorAll('button');"
-        "for(var i=0;i<bs.length;i++){if((bs[i].textContent||'').indexOf('\\u7cbe\\u786e\\u8bbe\\u7f6e')>=0)return bs[i];}"
-        "return null;}"
-        "var t=setInterval(function(){var e=d.querySelector('." + cls + "');"
-        "if(e){clearInterval(t);e.scrollIntoView({behavior:'smooth',block:'center'});return;}"
-        "if(!clicked){var b=trig();if(b){clicked=1;b.click();}}"
-        "if(++k>40){clearInterval(t);}},100);})();"
-    )
-    return (
-        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
-        "<body style='margin:0;overflow:hidden'><script>" + js + "</script></body></html>"
+        or ""
     )
 
 
 def render_composer() -> None:
-    """页面底部吸底的旅行管家输入卡：精确设置 + 一句话 + 开始规划。
+    """页面底部吸底的输入卡：精确设置 + 大致想法 + 开始规划。
 
-    对话气泡与「已套用」提示已移除，只留操作区。控件在脚本末尾执行，
-    所以点按钮 / 提交话都走「写标记 + rerun」，下一轮在顶部用 _payload_from_state() 取条件，保证只跑一次。
+    控件在脚本末尾执行，所以点按钮走「写标记 + rerun」，下一轮在顶部用
+    _payload_from_state() 取条件，保证只跑一次。
     """
     with st.container(key="composer"):
-        with popover_or_expander("⚙️ 精确设置（不想打字就点这个）"):
+        with popover_or_expander("⚙️ 精确设置（行程、日期、预算）"):
             _constraint_fields("f_")
-        # AI 填完表的高亮与滚动：弹层内容只在点开时才进 DOM，所以 <style> 和 iframe
-        # 留在弹层外头先挂上，由 _focus_scroll_html 负责把弹层点开再等字段出现。
-        _filled_field_fx()
 
-        bar = st.columns([4, 1], gap="small")
+        _idea_input("f_idea")
+
+        bar = st.columns([3, 1], gap="small")
         with bar[0]:
-            said = st.chat_input(
-                "例如：10月15日和老婆去扬州玩3天，人均2000，想看园林吃淮扬菜",
-                key="chat_said",
-                submit_mode="disable",
-            )
+            st.caption("出发地、目的地、日期和这句话会一起交给规划器。")
         with bar[1]:
             if full_width_button("开始规划", kind="primary"):
                 st.session_state["_run_now"] = True
                 st.rerun()
-        if said:
-            # 控件本轮已实例化，改状态只能等下一次运行，所以先暂存再 rerun
-            st.session_state["_pending_chat"] = said
-            st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # 规划过程提示（C 端口吻：说用户在意的，不说系统在跑什么）
 # ---------------------------------------------------------------------------
-# 送给 travel_agent 的字段白名单：与改造前的 8 个字段完全一致。
-# UI 新增的 country / province / preferences_list / preferences_note 只用于回填控件，
-# 不能进 Agent，否则会污染原有接口。
+# 送给 travel_agent 的字段白名单：结构化条件 + 从大致想法派生的约束。
 AGENT_PAYLOAD_KEYS = (
+    "origin",
     "city",
     "days",
     "people",
@@ -6209,27 +5832,26 @@ def render_adjust_panel() -> None:
     提交时只暂存，由下次运行顶部统一写回。
     """
     current = {
-        "origin": st.session_state.get("f_origin", CONSTRAINT_DEFAULTS["origin"]),
+        "origin": st.session_state.get("f_origin", ORIGIN_DEFAULT),
         "country": st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"]),
         "province": st.session_state.get("f_province", CONSTRAINT_DEFAULTS["province"]),
         "city": st.session_state.get("f_city", CONSTRAINT_DEFAULTS["city"]),
         "days": st.session_state.get("f_days", CONSTRAINT_DEFAULTS["days"]),
         "people": st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"]),
         "budget": st.session_state.get("f_budget", CONSTRAINT_DEFAULTS["budget"]),
-        "prefs": _current_group("f_", "prefs", PREFERENCE_OPTIONS)
-        or list(CONSTRAINT_DEFAULTS["prefs"]),
-        "pref_note": st.session_state.get("f_pref_note", CONSTRAINT_DEFAULTS["pref_note"]),
-        "companions": _current_group("f_", "companions", COMPANION_OPTIONS),
         "start": st.session_state.get("f_start"),
         "end": st.session_state.get("f_end"),
-        "request": st.session_state.get("f_request", CONSTRAINT_DEFAULTS["request"]),
+        "idea": st.session_state.get("f_idea", CONSTRAINT_DEFAULTS["idea"]),
     }
     with popover_or_expander("✏️ 调整条件并重新规划"):
         new_payload = _constraint_fields("q_", seed=current)
+        idea = _idea_input("q_idea")
         if full_width_button("用新条件重新规划", kind="primary", key="q_rerun"):
             # 只暂存，不直接改 f_*：这些控件本轮已实例化，直接改会抛异常。
+            new_payload["idea"] = idea
+            new_payload.update(_idea_constraints(idea))
             st.session_state["_pending_constraints"] = new_payload
-            st.session_state["_rerun_request"] = new_payload["request"]
+            st.session_state["_rerun_request"] = idea
             st.rerun()
 
 
@@ -6451,10 +6073,8 @@ def _play_intro(result: dict[str, Any]) -> dict[str, Any] | None:
 
 def main() -> None:
     setup_detail_log()
-    apply_pending_origin()
     apply_pending_constraints()
     apply_pending_preset()
-    apply_pending_chat()
 
     # 后台规划任务进行中：进度卡独占一屏。主线程不被 run() 占住，
     # 「取消规划」点一下就是一次正常 rerun，用户不用等后台请求跑完。
@@ -6481,20 +6101,33 @@ def main() -> None:
             "线上部署请打开右上角「设置 → 密钥」，按示例格式粘贴后点保存。"
         )
 
+    # 结果页「调整条件」提交后，用同一套 payload 流程重算
+    rerun_request = st.session_state.pop("_rerun_request", None)
+    run_now = st.session_state.pop("_run_now", False)
+    run_preset = st.session_state.pop("_run_preset", False)
+    # 卡片「⚡ 一键生成这个行程」和底部「开始规划」都只写标记，这里统一开跑一次
+    start_run = run_now or run_preset or rerun_request is not None
+    if start_run and not run_preset:
+        _apply_idea_autofill()
+
+    # 用户亲手写的「大致想法」才算「你说过」；卡片自带的文案仍标成「这条线的设定」。
+    if start_run and not run_preset:
+        said = str(rerun_request if rerun_request is not None else st.session_state.get("f_idea") or "").strip()
+        if said:
+            lines = st.session_state.setdefault("ask_lines", [])
+            if not lines or lines[-1] != said:
+                lines.append(said)
+            st.session_state["ask_lines"] = lines[-3:]
+            st.session_state["f_request"] = "；".join(st.session_state["ask_lines"])
+
     # 输入卡渲染在脚本末尾，这一轮先用 session_state 里的条件
     payload = _payload_from_state()
 
-    # 结果页「调整条件」提交后，用同一套 payload 流程重算
-    rerun_request = st.session_state.pop("_rerun_request", None)
-    # 卡片「⚡ 一键生成这个行程」和底部「开始规划」都只写标记，这里统一开跑一次。
-    # 三个标记先各自 pop 再判 or：短路写法会把后面那个留到下一轮，凭空多跑一次规划。
-    run_now = st.session_state.pop("_run_now", False)
-    run_preset = st.session_state.pop("_run_preset", False)
-    if run_now or run_preset or rerun_request is not None:
+    if start_run:
         st.session_state.pop("result", None)
-        # 开跑了就别让详情弹窗压在进度上，也别让上一趟的片头残留
+        # 开跑了就别让详情弹窗压在进度上
         st.session_state["_open_detail"] = ""
-        if _start_plan(str(rerun_request) if rerun_request is not None else payload["request"], payload):
+        if _start_plan(str(payload["request"]), payload):
             st.rerun()
 
     plan_error = st.session_state.pop("_plan_error", None)
