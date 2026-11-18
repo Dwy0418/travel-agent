@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -25,7 +26,7 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from travel_agent import agent, config, llm, zh_labels
+from travel_agent import agent, config, llm, pdf_export, zh_labels
 
 from components.map_intro import map_intro
 
@@ -87,6 +88,27 @@ def full_width_download(label: str, **kwargs: Any) -> bool:
         return st.download_button(label, width="stretch", **kwargs)
     except TypeError:
         return st.download_button(label, use_container_width=True, **kwargs)
+
+
+def _itinerary_pdf_bytes(result: dict[str, Any]) -> bytes:
+    """生成行程单 PDF 并缓存在会话里：翻页/重跑不重复下载景点实拍图。"""
+    signature = hashlib.md5(
+        json.dumps(
+            {
+                "markdown": result.get("markdown") or "",
+                "city": (result.get("constraints") or {}).get("city"),
+                "days": (result.get("constraints") or {}).get("days"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = st.session_state.get("_pdf_cache") or {}
+    if cached.get("signature") == signature and cached.get("data"):
+        return cached["data"]
+    data = pdf_export.build_itinerary_pdf(result)
+    st.session_state["_pdf_cache"] = {"signature": signature, "data": data}
+    return data
 
 
 def full_width_table(rows: Any, **kwargs: Any) -> None:
@@ -5233,7 +5255,7 @@ def _go_home() -> None:
     st.session_state["f_province"] = UNLIMITED_PROVINCE
     st.session_state["f_city"] = UNLIMITED_CITY
     st.session_state["_card_page"] = 1
-    for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+    for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -5302,7 +5324,7 @@ def _render_plan_job(job: _PlanJob) -> None:
             if st.button("取消规划", key=cancel_key):
                 job.cancelled.set()
                 _snapshot_form()
-                for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+                for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
                     st.session_state.pop(key, None)
                 st.session_state.pop("_agent_job", None)
                 box.empty()
@@ -5343,7 +5365,7 @@ def _render_plan_job_legacy(job: _PlanJob) -> None:
         if st.button("取消规划", key="ci_plan_cancel"):
             job.cancelled.set()
             _snapshot_form()
-            for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error"):
+            for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
                 st.session_state.pop(key, None)
             st.session_state.pop("_agent_job", None)
             st.rerun()
@@ -5882,12 +5904,18 @@ def show_result(result: dict[str, Any]) -> None:
     with head_cols[0]:
         st.subheader("行程一览")
     with head_cols[1]:
-        full_width_download(
-            "📥 下载行程单",
-            data=result["markdown"],
-            file_name=f"{c['city']}-{c['days']}天行程单.md",
-            mime="text/markdown",
-        )
+        try:
+            pdf_bytes = _itinerary_pdf_bytes(result)
+        except Exception:  # noqa: BLE001 - 导出失败不能把结果页整页打崩
+            logging.getLogger("travel_agent.detail").exception("pdf_export_failed")
+            st.warning("行程单 PDF 生成失败，请刷新后重试。")
+        else:
+            full_width_download(
+                "📥 下载行程单 PDF",
+                data=pdf_bytes,
+                file_name=f"{c['city']}-{c['days']}天行程单.pdf",
+                mime="application/pdf",
+            )
 
     # 兜底：模型没给出 days 结构时，用原来的表格数据渲染，避免开天窗
     if not days:
