@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import threading
 import time
 from datetime import date, timedelta
 from typing import Any, Callable
@@ -147,6 +148,8 @@ class TravelAgent:
         self._cancelled = cancelled or (lambda: False)
         self.state: dict[str, Any] = {}
         self.round_no = 0
+        # 同一轮的工具并行执行时，缓存与 trace 仍按主线程串行写入
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # 状态 / Trace
@@ -156,12 +159,13 @@ class TravelAgent:
 
     def _trace(self, line: str, kind: str = "info", **extra: Any) -> None:
         entry = {"round": self.round_no, "kind": kind, "line": line, **extra}
-        self.state.setdefault("trace_log", []).append(entry)
-        if self.trace_callback:
-            try:
-                self.trace_callback(entry)
-            except Exception:  # noqa: BLE001 - 回调异常不影响主流程
-                pass
+        with self._lock:
+            self.state.setdefault("trace_log", []).append(entry)
+            if self.trace_callback:
+                try:
+                    self.trace_callback(entry)
+                except Exception:  # noqa: BLE001 - 回调异常不影响主流程
+                    pass
 
     def _check_cancelled(self) -> None:
         """轮次安全点：用户点了取消就直接抛出去，不再发起下一轮调用。
@@ -280,6 +284,9 @@ class TravelAgent:
                 return result
         if not isinstance(raw_args, dict):
             raw_args = {}
+        if name == "get_weather" and self.state.get("weather_unavailable"):
+            # 预取已确认天气接口不可用：别再让同一份行程等第二次超时
+            return {"success": False, "error": "天气接口暂不可用，按晴天规划"}
         valid, err = schemas.validate_args(name, raw_args)
         if valid is None:
             result = {"success": False, "error": err or "参数非法"}
@@ -297,8 +304,9 @@ class TravelAgent:
         cache_key = f"{name}:{json.dumps(valid, sort_keys=True, ensure_ascii=False)}"
         if name != "estimate_budget" and cache_key in cache:
             # 缓存命中不逐条打印，每轮汇总一句（见 _flush_cache_summary）
-            self.state["cache_hits"] = self.state.get("cache_hits", 0) + 1
-            self.state["cache_hits_pending"] = self.state.get("cache_hits_pending", 0) + 1
+            with self._lock:
+                self.state["cache_hits"] = self.state.get("cache_hits", 0) + 1
+                self.state["cache_hits_pending"] = self.state.get("cache_hits_pending", 0) + 1
             self._log_detail("cache_hit", {"tool": name, "args": valid})
             return cache[cache_key]
 
@@ -315,7 +323,8 @@ class TravelAgent:
         elapsed_ms = int((time.time() - started) * 1000)
         if name != "estimate_budget":
             cache[cache_key] = result
-        self.state["tool_call_count"] = self.state.get("tool_call_count", 0) + 1
+        with self._lock:
+            self.state["tool_call_count"] = self.state.get("tool_call_count", 0) + 1
         self._remember_places(result)
         self._trace(
             f"{self._rp()}{zh_labels.describe_tool_result(name, result)}",
@@ -333,6 +342,29 @@ class TravelAgent:
     def _validate_router(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """校验层调用的工具走同一条通路（复用缓存，Trace 可追溯）。"""
         return self._execute(name, args, source="validator")
+
+    def _call_one(self, call: dict[str, Any]) -> dict[str, Any]:
+        fn = call.get("function") or {}
+        name = fn.get("name") or ""
+        return self._execute(name, fn.get("arguments"), source="model")
+
+    def _execute_batch(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """同一轮工具并行执行：plan_route 之间互不依赖，串行纯属白等。
+
+        结果按模型给出的顺序返回，tool 消息顺序不变；缓存与计数在 _execute 内加锁。
+        """
+        if len(tool_calls) <= 1:
+            return [self._call_one(call) for call in tool_calls]
+        results: list[dict[str, Any] | None] = [None] * len(tool_calls)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as pool:
+            futures = {pool.submit(self._call_one, call): idx for idx, call in enumerate(tool_calls)}
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:  # noqa: BLE001 - 单个工具异常不能拖垮整轮
+                    results[idx] = {"success": False, "error": f"工具执行异常：{exc}"}
+        return [item or {"success": False, "error": "工具未返回结果"} for item in results]
 
     # ------------------------------------------------------------------ #
     # 点间交通费：模型只写「怎么去」，费用由代码按 plan_route 结果累加
@@ -380,7 +412,7 @@ class TravelAgent:
 
         total = 0.0
         notes: list[str] = []
-        tried = 0
+        pairs: list[tuple[dict[str, Any], dict[str, Any], str, tuple[Any, Any], tuple[Any, Any]]] = []
         for day in itinerary.get("days") or []:
             stops = [
                 item
@@ -396,28 +428,39 @@ class TravelAgent:
                     continue
                 origin = (self._num(prev.get("lng")), self._num(prev.get("lat")))
                 dest = (self._num(cur.get("lng")), self._num(cur.get("lat")))
-                route = self._cached_route(mode, origin, dest)
-                if route is None:
-                    if tried >= 10:  # 兜底：避免极端行程把接口打爆
-                        continue
-                    tried += 1
-                    route = self._validate_router(
-                        "plan_route",
-                        {
-                            "origin_lng": origin[0],
-                            "origin_lat": origin[1],
-                            "dest_lng": dest[0],
-                            "dest_lat": dest[1],
-                            "mode": mode,
-                        },
-                    )
-                if not route.get("success"):
-                    continue
-                cost = self._num(route.get("cost_yuan")) or 0.0
-                if cost <= 0:
-                    continue
-                total += cost
-                notes.append(f"{prev.get('name') or '?'}→{cur.get('name') or '?'} {cost:.0f} 元")
+                pairs.append((prev, cur, mode, origin, dest))
+
+        routes: list[dict[str, Any] | None] = [
+            self._cached_route(mode, origin, dest) for _, _, mode, origin, dest in pairs
+        ]
+        missing = [(idx, pair) for idx, pair in enumerate(pairs) if routes[idx] is None][:10]
+        if missing:
+            def fetch(item: tuple[int, tuple[Any, ...]]) -> tuple[int, dict[str, Any]]:
+                idx, (_, _, mode, origin, dest) = item
+                result = self._validate_router(
+                    "plan_route",
+                    {
+                        "origin_lng": origin[0],
+                        "origin_lat": origin[1],
+                        "dest_lng": dest[0],
+                        "dest_lat": dest[1],
+                        "mode": mode,
+                    },
+                )
+                return idx, result
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(missing))) as pool:
+                for idx, route in pool.map(fetch, missing):
+                    routes[idx] = route
+
+        for (prev, cur, _mode, _origin, _dest), route in zip(pairs, routes):
+            if not route or not route.get("success"):
+                continue
+            cost = self._num(route.get("cost_yuan")) or 0.0
+            if cost <= 0:
+                continue
+            total += cost
+            notes.append(f"{prev.get('name') or '?'}→{cur.get('name') or '?'} {cost:.0f} 元")
         return round(total, 1), notes
 
     @staticmethod
@@ -562,12 +605,19 @@ class TravelAgent:
         pois: dict[str, list[dict[str, Any]]] = {}
         for name, args, result in self._prefetch_results(tasks):
             if not result.get("success"):
+                if name == "get_weather":
+                    self.state["weather_unavailable"] = True
                 continue
             if name == "get_weather":
                 weather = result.get("days") or []
             elif name == "search_poi":
                 pois[str(args.get("keyword"))] = (result.get("pois") or [])[:6]
         self.state["prefetch"] = {"weather": weather, "pois": pois}
+        if self.state.get("weather_unavailable"):
+            self._trace(
+                f"{self._rp()}天气接口本次不可用，已跳过重复查询，按晴天安排",
+                "prepare",
+            )
         hits = sum(len(items) for items in pois.values())
         self._trace(
             f"{self._rp()}预取完成：天气 {len(weather)} 天、景点候选 {hits} 个",
@@ -594,6 +644,12 @@ class TravelAgent:
             )
         if lines:
             lines.insert(0, "天气（已按行程日期查好，数据真实，不要再调用 get_weather）：")
+
+        if self.state.get("weather_unavailable"):
+            lines.append(
+                "天气：接口本次不可用（代码已尝试），不要再调用 get_weather；"
+                "按常规天气安排，户外项目顺手留一个室内备选即可。"
+            )
 
         pois = data.get("pois") or {}
         if pois:
@@ -661,10 +717,9 @@ class TravelAgent:
                     f"{self._rp()}模型决策：调用 {len(tool_calls)} 个工具（{'、'.join(names)}）",
                     "decision",
                 )
-                for call in tool_calls:
+                for call, result in zip(tool_calls, self._execute_batch(tool_calls)):
                     fn = call.get("function") or {}
                     name = fn.get("name") or ""
-                    result = self._execute(name, fn.get("arguments"), source="model")
                     messages.append(
                         {
                             "role": "tool",

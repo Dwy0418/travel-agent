@@ -53,12 +53,20 @@ def _text(value: Any) -> str:
     return ""
 
 
-def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    """10 秒超时 + 2 次指数退避重试。"""
+def _get_json(
+    url: str,
+    params: dict[str, Any],
+    *,
+    timeout: float | None = None,
+    retries: int | None = None,
+) -> dict[str, Any]:
+    """默认 10 秒超时 + 2 次指数退避重试；天气这类可选项可单独调短。"""
+    timeout = config.HTTP_TIMEOUT if timeout is None else timeout
+    retries = config.HTTP_RETRIES if retries is None else retries
     last_error: Exception | None = None
-    for attempt in range(config.HTTP_RETRIES + 1):
+    for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, params=params, timeout=config.HTTP_TIMEOUT)
+            resp = requests.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, dict):
@@ -66,7 +74,7 @@ def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
             return data
         except Exception as exc:  # noqa: BLE001 - 统一兜底
             last_error = exc
-            if attempt < config.HTTP_RETRIES:
+            if attempt < retries:
                 time.sleep(2 ** attempt)  # 1s -> 2s
     raise ToolError(str(last_error))
 
@@ -201,6 +209,8 @@ def get_weather(lng: float, lat: float, days: int = 3) -> dict[str, Any]:
                 "timezone": "Asia/Shanghai",
                 "forecast_days": days,
             },
+            timeout=config.WEATHER_TIMEOUT,
+            retries=config.WEATHER_RETRIES,
         )
         daily = data.get("daily") or {}
         dates = daily.get("time") or []

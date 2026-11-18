@@ -66,6 +66,9 @@ STRICT_TOOLS = _cfg("STRICT_TOOLS", "1") != "0"
 # ---- 硬性网络规则 ----
 HTTP_TIMEOUT = 10          # 所有接口 10 秒超时
 HTTP_RETRIES = 2           # 失败重试 2 次：1s -> 2s
+# 天气是可选增强：查不到就按晴天规划，不值得让一次规划等 30 秒。
+WEATHER_TIMEOUT = 6
+WEATHER_RETRIES = 0
 LLM_TIMEOUT = 90
 LLM_RETRIES = 3            # LLM 重试 3 次：2s -> 4s -> 8s（服务端 5xx/限流较常见）
 MAX_OUTPUT_TOKENS = int(_cfg("MAX_OUTPUT_TOKENS", "4096"))  # 多天行程 JSON 较长，2048 会被截断
