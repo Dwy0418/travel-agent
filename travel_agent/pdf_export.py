@@ -196,14 +196,14 @@ class _ItineraryPDF(FPDF):
 def _section_title(pdf: _ItineraryPDF, title: str) -> None:
     if pdf.will_page_break(16):
         pdf.add_page()
-    pdf.ln(2)
+    pdf.ln(1)
     pdf.set_font("noto", size=12)
     pdf.set_text_color(*NAVY)
     pdf.cell(0, 7, title, new_x="LMARGIN", new_y="NEXT")
     pdf.set_draw_color(*ACCENT)
     pdf.set_line_width(0.9)
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + 18, pdf.get_y())
-    pdf.ln(3)
+    pdf.ln(2.5)
     pdf.set_text_color(*NAVY)
 
 
@@ -381,8 +381,8 @@ def _budget_block(pdf: _ItineraryPDF, c: dict[str, Any], budget: dict[str, Any])
             col_widths=[3, 1],
             headings_style=FontFace(family="noto", emphasis="", size_pt=8.5, color=(255, 255, 255), fill_color=ACCENT),
             text_align="LEFT",
-            line_height=5.0,
-            padding=2.0,
+            line_height=4.6,
+            padding=1.5,
             borders_layout=TableBordersLayout.HORIZONTAL_LINES,
         ) as table:
             head = table.row()
@@ -424,12 +424,21 @@ def _budget_block(pdf: _ItineraryPDF, c: dict[str, Any], budget: dict[str, Any])
 def _tips_block(pdf: _ItineraryPDF, tips: list[str]) -> None:
     if not tips:
         return
+    # 先算高度，整块要么全在本页，要么整体换页，避免只剩一两条孤零零留在新页
+    pdf.set_font("noto", size=9.5)
+    needed = 12.0
+    for tip in tips:
+        text = _clean(tip)
+        if text:
+            needed += max(1, len(pdf.multi_cell(0, 5.2, f"·  {text}", dry_run=True, output="LINES"))) * 5.2
+    if pdf.will_page_break(needed):
+        pdf.add_page()
     _section_title(pdf, "行程要点")
     pdf.set_font("noto", size=9.5)
     for tip in tips:
         text = _clean(tip)
         if text:
-            pdf.multi_cell(0, 5.6, f"·  {text}", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 5.2, f"·  {text}", new_x="LMARGIN", new_y="NEXT")
 
 
 # --------------------------------------------------------------------------- #
