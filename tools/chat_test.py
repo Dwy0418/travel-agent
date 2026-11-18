@@ -99,19 +99,14 @@ check("我是你的旅行管家" not in texts(at), "输入卡上不再有管家�
 check("请用大白话描述你的出行计划" not in texts(at),
       "副标题也移除，输入卡只剩精确设置 + 输入框 + 开始规划")
 check("已套用「" not in texts(at), "「已套用…」提示气泡不再渲染")
-# 精确设置改成状态驱动的正文表单卡（popover 没法被程序打开，AI 自动摊开就用不了）：
-# 默认收起，摊开时才渲染整组控件。
-check(not any(sb.key == "f_country" for sb in at.selectbox),
-      "精确设置默认收起：打字前不把整张表单摊开")
-check(any(str(b.label).startswith("⚙️ 精确设置") for b in at.button), "收起时留着一个展开按钮")
-atdrawer = new_at()
-atdrawer.button(key="toggle_precise").click()
-atdrawer.run()
-assert not atdrawer.exception, f"展开精确设置抛异常：{atdrawer.exception}"
-check(any(sb.key == "f_country" for sb in atdrawer.selectbox), "点一下才把级联下拉摊开")
-check(any(sb.key == "f_origin" for sb in atdrawer.selectbox), "展开后基础信息第一栏就是出发地")
-check(atdrawer.session_state["f_origin"] == A.ORIGIN_DEFAULT, "出发地默认值落在候选里",
-      str(atdrawer.session_state["f_origin"]))
+# 精确设置退回 st.popover：收起与否是前端状态，AppTest 里控件照样渲染，
+# 「AI 填完自动展开」只能在浏览器里点触发按钮，离线那段验的是脚本形状（见 3a）。
+check(any(sb.key == "f_country" for sb in at.selectbox), "『精确设置』里的级联下拉照样渲染（收起也在）")
+check(any(sb.key == "f_origin" for sb in at.selectbox), "基础信息第一栏就是出发地")
+check(at.session_state["f_origin"] == A.ORIGIN_DEFAULT, "出发地默认值落在候选里",
+      str(at.session_state["f_origin"]))
+check(not any(str(b.key) == "toggle_precise" for b in at.button),
+      "输入卡里没有「收起精确设置」那个开关按钮了")
 check(any(str(b.label) == "开始规划" for b in at.button), "『开始规划』还在，只是搬进了输入卡")
 
 cards_all, scope_all = A.pick_recommendations()
@@ -144,53 +139,52 @@ check("addEventListener('wheel'" in snap_src and "passive: false" in snap_src
       "滚轮监听 passive:false，切页后冻结 800ms")
 check("sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' })" in snap_src,
       "滚轮一次只平滑跳到目标页，不会连飞两三页")
-check("ci-last-page" not in snap_src and "translateY(calc(100% + 24px))" not in snap_src,
-      "输入卡不再「末页才滑进来」：任务一要的是任何一页都常驻底部，只有详情弹窗才隐藏")
-# AI 自动定位要 scrollIntoView，被填的那个字段得给吸底卡让出底部余量
-margin_rule = re.search(r'\.st-key-precise,\n\.st-key-precise \[class\*="st-key-f_"\] \{([^}]*)\}', snap_src)
-check(margin_rule is not None and "--ci-composer-h" in margin_rule.group(1),
-      "底部余量挂在字段上、跟着输入卡实时高度走，被填字段不会藏在卡后面",
-      margin_rule.group(1).strip()[:60] if margin_rule else "没有这条规则")
+check("root.classList.toggle('ci-last-page'" in snap_src
+      and "html.ci-last-page .st-key-composer" in snap_src
+      and "transform: translateY(calc(100% + 24px))" in snap_src,
+      "输入卡回到远端外观：默认藏在视口下，末页由 IntersectionObserver 用 translateY 滑进来")
+check(".st-key-precise" not in snap_src, "整页摊开那张表单卡的样式已删除，精确设置回到弹层")
 grid_rules = "\n".join(re.findall(r":has\(\.pc-face\)[^{]*\{[^}]*\}", snap_src))
 check("repeat(6" not in grid_rules, "卡片网格列数只剩 8 的因数（1/2/4），末行不缺格")
 check("content-visibility" not in snap_src, "页外网格的 content-visibility 随三页同屏一起退场")
 check(".rec-head" not in snap_src and ".pc-page-scope {" in snap_src,
       "旧的一屏标题样式摘干净了，范围提示改由每页页首接手")
 
-# 任务一：输入框必须「全局唯一 + 绝对固定」，翻页/滚动都不跟着动
+# 输入框全局唯一：一张卡，fixed 钉底，翻页时只升不挪
 composer_css = re.search(r"\.st-key-composer \{([^}]*)\}", snap_src)
 assert composer_css, "app.py 里找不到 .st-key-composer 规则"
 cbody = composer_css.group(1)
 check("position: fixed" in cbody and "bottom:" in cbody, "输入卡是 fixed 钉底，不随主区滚动", cbody[:50].strip())
-check("z-index: 50" in cbody, "输入卡层级 50，卡片从它下面滚过去")
-check("max-height: calc(100vh" in cbody and "overflow-y: auto" in cbody,
-      "输入卡自带高度上限，内容再多也顶不出视口")
+check("z-index: 30" in cbody, "层级退回远端的 30，卡片从它下面滚过去")
+check("visibility: hidden" in cbody and "opacity: 0" in cbody,
+      "默认整卡藏在视口外，末页才升起，不盖第一页的卡片")
+check("max-height" not in cbody and "overflow-y" not in cbody,
+      "卡里不放对话记录，也就不需要自带滚动")
 check(snap_src.count('with st.container(key="composer"):') == 1, "全页只有一张输入卡",
       str(snap_src.count('with st.container(key="composer"):')))
+check("st.container(height=172" not in snap_src, "输入卡里那段定高对话回看已撤掉")
 pads = [int(v) for v in re.findall(r"padding-bottom: calc\(var\(--ci-composer-h, (\d+)px\)", snap_src)]
 check(bool(pads) and max(pads) >= 200,
       "主区底部留白跟着输入卡实时高度走（兜底 ≥200px），末排卡片不被盖住", str(pads))
 check("_embed_layout_sync()" in snap_src and "--ci-composer-h" in snap_src,
-      "输入卡高度由 _embed_layout_sync 写进 CSS 变量，聊天记录把卡片撑高也不会盖住内容")
+      "输入卡高度由 _embed_layout_sync 写进 CSS 变量，主区留白跟着它让位")
 check("if not result and not detail_open:" in snap_src,
       "详情弹窗打开时根本不渲染输入卡，不与弹窗抢位置")
-precise_css = re.search(r"\.st-key-precise \{([^}]*)\}", snap_src)
-check(precise_css is not None and "max-height" not in precise_css.group(1),
-      "表单卡不再自带滚动：它回到页面流里，跟着主区滚",
-      (precise_css.group(1).strip()[:50] if precise_css else "没有这条规则"))
-check(precise_css and "scroll-margin" not in precise_css.group(1),
-      "余量不再写死在整张卡上：只有真正被滚过去的字段带让位",
-      precise_css.group(1).strip()[:50] if precise_css else "没有这条规则")
 comp_fn = re.search(r"def render_composer\(\) -> None:[\s\S]*?\n(?=def )", snap_src)
-panel_fn = re.search(r"def render_precise_panel\(\) -> None:[\s\S]*?\n(?=def )", snap_src)
-check(comp_fn is not None and panel_fn is not None, "输入卡与表单卡各自一个函数")
-check(comp_fn and "_constraint_fields" not in comp_fn.group(0),
-      "表单没留在吸底卡里：卡的高度只由开关、按钮和输入行决定")
-check(comp_fn and "popover_or_expander" not in comp_fn.group(0),
-      "精确设置不再用 st.popover：popover 打不开，AI 自动摊开就没法做")
+check(comp_fn and 'popover_or_expander("⚙️ 精确设置' in comp_fn.group(0),
+      "精确设置回到输入卡里的 popover 弹层")
+check(comp_fn and '_constraint_fields("f_")' in comp_fn.group(0),
+      "级联下拉就住在弹层里，不再摊进正文")
+check("def render_precise_panel" not in snap_src, "整页摊开那张表单卡的函数已删除")
+# AI 自动展开：服务端打不开 popover，只能在组件 iframe 里点一下触发按钮
+fx_fn = re.search(r"def _focus_scroll_html\(cls: str\)[\s\S]*?\n(?=def )", snap_src)
+check(fx_fn and ".st-key-composer" in fx_fn.group(0) and "b.click()" in fx_fn.group(0),
+      "自动展开靠点 popover 触发按钮：先在吸底卡里找「精确设置」那个按钮")
+check(fx_fn and "clicked=0" in fx_fn.group(0), "只点一次，别把刚展开的弹层又点回去")
+check(fx_fn and "scrollIntoView({behavior:'smooth',block:'center'})" in fx_fn.group(0),
+      "字段挂进 DOM 后滚到视野中间（平滑 + 居中）")
 head_body = snap_src[snap_src.index("def main() -> None:"):]
-check(head_body.index("render_precise_panel()") < head_body.index("render_composer()"),
-      "正文里表单卡排在输入卡之前：摊开时它就在输入卡正上方")
+check("render_precise_panel()" not in head_body, "main 里不再往正文插表单卡")
 
 # 冷启动闪烁的根因是「卡片 CSS 出现得太晚」：脚本从 hero 到卡片中间要跑一千多毫秒，
 # 等 background-image 生效才发请求，第一页的封面就空着那一秒多。preload 必须挂在最早的块里。
@@ -278,15 +272,17 @@ finally:
     A.st.components.v1.html = _real_comp
 check(atj.session_state["f_city"] == "梅州市", "面板里的城市真的选到了梅州", str(atj.session_state["f_city"]))
 check(atj.session_state["f_province"] == "广东省", "省份跟着选中")
-check(atj.session_state.get("_open_precise") is True, "抽到字段才自动摊开精确设置")
-check(any(sb.key == "f_city" for sb in atj.selectbox), "摊开之后城市下拉框确实渲染了")
+check(any("b.click()" in s for s in seen_comp), "抽到字段才去点「精确设置」触发按钮", str(seen_comp)[:90])
+check(any(sb.key == "f_city" for sb in atj.selectbox), "城市下拉框在弹层里照样渲染（收起也在 DOM）")
 _scroll = next((s for s in seen_comp if "scrollIntoView" in s), "")
 check('.st-key-f_city' in _scroll, "滚过去停的第一个字段是城市，不是累计原话", _scroll[:80])
 check("_focus_key" not in atj.session_state, "高亮/滚动标记是一次性的，下一轮不再拽视野",
       str(atj.session_state.get("_focus_key")))
 check("pfFlash" in texts(atj), "自动填过的字段带蓝框闪动")
-check("已按地标「嘉应大学」" in texts(atj), "回复里交代了是怎么定位的",
-      [ln for ln in texts(atj).splitlines() if "地标" in ln][:1])
+check(any("已按地标「嘉应大学」" in str(t.value) for t in atj.toast),
+      "管家回复走右下角轻提示，说清了是怎么定位的",
+      [str(t.value)[:40] for t in atj.toast])
+check("chat_message" not in comp_fn.group(0), "输入卡里不再渲染对话气泡")
 check(any("scrollIntoView" in s and ".st-key-f_city" in s for s in seen_comp),
       "滚动是在组件 iframe 里对 parent.document 做的", next((s[:70] for s in seen_comp), "没发出组件"))
 check(any("behavior:'smooth'" in s and "block:'center'" in s for s in seen_comp),
@@ -303,9 +299,11 @@ atk = new_at()
 atk.session_state["_pending_chat"] = "帮我随便安排一下"
 atk.run()
 assert not atk.exception, f"空抽取抛异常：{atk.exception}"
-check(not atk.session_state.get("_open_precise"), "啥都没抽到就不摊开面板",
-      str(atk.session_state.get("_open_precise")))
-check(not any(sb.key == "f_city" for sb in atk.selectbox), "面板没展开时不渲染整张表单")
+check("pfFlash" not in texts(atk), "啥都没抽到就不高亮、也不把弹层点开",
+      str(atk.session_state.get("_filled_keys")))
+check(not any("已按地标" in str(t.value) for t in atk.toast), "空抽取不谎报地标定位结果")
+check(any("还差点信息" in str(t.value) for t in atk.toast), "空抽取只提示还差什么",
+      [str(t.value)[:40] for t in atk.toast])
 check("f_request" not in str(atk.session_state.get("_focus_key") or ""), "原话累计串不算自动填的字段")
 
 # ---------------------------------------------------------------------------

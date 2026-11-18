@@ -2241,12 +2241,8 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
     position: fixed;
     inset-inline: clamp(10px, 2.6vw, 40px);
     bottom: clamp(10px, 1.6vh, 18px);
-    z-index: 50;
+    z-index: 30;
     max-width: 1180px;
-    /* 精确设置在页面流里长，卡里只剩标题、胶囊、按钮和输入行；这条只是兜底上限 */
-    max-height: calc(100vh - 220px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
     margin-inline: auto;
     padding: 11px clamp(12px, 1.5vw, 20px) 13px clamp(12px, 1.5vw, 20px);
     background: rgba(15, 23, 42, 0.65);
@@ -2255,29 +2251,17 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 18px;
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
-    /* 输入卡全程钉在底部：任务一要的就是「翻页、滚动、换视图都不动，只在详情弹窗里隐藏」
-       （隐藏那条走 body:has(div[data-testid="stDialog"])）。
-       原先只在末页用 translateY 升起来，用户在第 1 页根本看不见输入框。 */
+    /* 输入卡只在最后一页升起：transform 滑入滑出，不改 height，
+       否则每页的吸附高度会跟着变。默认藏在视口下 24px。 */
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+    visibility: hidden;
+    transition: transform .42s cubic-bezier(.22, .61, .36, 1), opacity .3s ease, visibility .42s;
 }
-/* AI 自动填表摊开的那张表单卡：排在正文末尾、吸底卡正上方，跟着页面一起滚。
-   故意不给 max-height —— 一米六的表单塞进吸底卡会把输入行顶出视口，
-   「输入框绝对固定」当场破防。scroll-margin 给 scrollIntoView 让出卡片高度。 */
-.st-key-precise {
-    max-width: 1180px;
-    margin: 0 auto 8px;
-    padding: 12px clamp(12px, 1.5vw, 20px) 14px;
-    background: rgba(9, 14, 26, 0.82);
-    backdrop-filter: blur(20px) saturate(150%);
-    -webkit-backdrop-filter: blur(20px) saturate(150%);
-    border: 1px solid rgba(148, 163, 184, 0.20);
-    border-radius: 18px;
-}
-/* 真正被 scrollIntoView 的是卡片里那个字段（.st-key-f_city 之类），不是整张卡，
-   所以底部余量必须挂在字段上；吸底卡摊开对话回看后能长到三百多像素，
-   高度由 _layout_sync 实时写进 --ci-composer-h，这里跟着它让位。 */
-.st-key-precise,
-.st-key-precise [class*="st-key-f_"] {
-    scroll-margin-block-end: calc(var(--ci-composer-h, 220px) + 24px);
+html.ci-last-page .st-key-composer {
+    transform: translateY(0);
+    opacity: 1;
+    visibility: visible;
 }
 /* 输入卡里的控件自己还铺着一层实色（主题给的），会把毛玻璃糊回一块板：
    输入框与内层容器全部让路，只留一条细边标出可输入区域。 */
@@ -3458,12 +3442,13 @@ def _embed_scroll_top() -> None:
 
 
 def _home_scroll_html(total: int) -> str:
-    """首页整页吸附：滚轮一次切一页、页码实时更新、邻页懒加载封面。
+    """首页整页吸附：滚轮一次切一页、页码实时更新、末页升起输入框、邻页懒加载封面。
 
     全部跑在父页面上下文（st.iframe 与主页面同源）：
     - wheel 必须 passive:false 才能 preventDefault；一次切换后冻结 800ms，
       避免传统鼠标一滚就飞过两三页；
-    - 输入卡不参与这里：它由 CSS 常驻钉底，翻页时位置一动不动；
+    - IntersectionObserver 盯最后一页，用 <html> 上的 ci-last-page 类驱动
+      composer 的 translateY 滑入滑出，不改高度；
     - 封面按当前页 ±1 懒加载，66 张卡片虽然都在 DOM 里，但不会同时下载 66 张图。
     """
     _ = total
@@ -3479,8 +3464,11 @@ def _home_scroll_html(total: int) -> str:
   );
   if (!pages.length) return;
   var last = pages.length - 1;
+  var root = doc.documentElement;
   var idx = Math.max(0, Math.min(last, Math.round(sc.scrollTop / (sc.clientHeight || 1))));
   var locked = 0, raf = 0;
+  // 上一轮如果停在末页，<html> 上的类会留到新页面；先清掉，等 IO 重新判定
+  root.classList.remove('ci-last-page');
 
   function updateLabel() {
     var el = doc.querySelector('.pc-page');
@@ -3523,6 +3511,15 @@ def _home_scroll_html(total: int) -> str:
     locked = now + 800;
     sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' });
   }, { passive: false });
+
+  if (p.IntersectionObserver) {
+    var io = new p.IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        root.classList.toggle('ci-last-page', entry.isIntersecting);
+      });
+    }, { root: sc, threshold: 0.35 });
+    io.observe(pages[last]);
+  }
 
   updateLabel();
   loadNeighbours();
@@ -5164,15 +5161,19 @@ def apply_pending_chat() -> None:
     lines.append(str(text))
     st.session_state["f_request"] = "；".join(lines[-3:])
 
-    # 抽到了东西才动手：自动展开精确设置 + 记住第一个被改的字段，让界面滚过去并闪一下。
-    # 「随便去哪玩」这种一句话里啥都没有的，changed 为空，面板保持收起、按默认值走。
+    # 抽到了东西才动手：让 _filled_field_fx 把「精确设置」弹层点开、滚到第一个被改的字段并闪一下。
+    # 「随便去哪玩」这种一句话里啥都没有的，changed 为空，弹层保持收起、按默认值走。
     changed = _touched_fields(before)
     if changed:
-        st.session_state["_open_precise"] = True
         st.session_state["_filled_keys"] = changed
         st.session_state["_focus_key"] = changed[0]
 
-    log.append({"role": "assistant", "content": _reply_text(found, _state_snapshot(), used_model=bool(model))})
+    reply = _reply_text(found, _state_snapshot(), used_model=bool(model))
+    log.append({"role": "assistant", "content": reply})
+    # 吸底卡里不放对话记录（只留操作区），管家的话改成右下角几秒的轻提示，
+    # 取最该看见的那一句：地标定位结果，没有地标就说还差什么。
+    note = next((p for p in reply.split("\n\n") if p.startswith("已按地标")), "")
+    st.toast(note or reply.split("\n\n")[-1], icon="🧭")
 
 
 def _filled_field_fx() -> None:
@@ -5202,15 +5203,20 @@ def _filled_field_fx() -> None:
 def _focus_scroll_html(cls: str) -> str:
     """在组件 iframe 里把主文档的 cls 元素滚到视野中间（cls 已由 _FIELD_KEY 校验）。
 
-    组件 iframe 和正文是同一轮渲染出来的，DOM 未必已就位，所以轮询等元素出现再滚。
-    表单卡活在正文流里，不在 100dvh 那个吸附容器（.st-key-home_pages）内，
-    滚它不会被拽回吸附点；字段和吸底卡之间的那段距离由 scroll-margin-block-end 让出来。
+    「精确设置」是 st.popover，服务端没法把它打开，所以这里先在吸底卡里找那个触发
+    按钮点一下（Baseweb 的弹层是纯前端状态，一次 click 就展开），再轮询等弹层里的
+    字段挂进 DOM，出现后滚到视野中间。只点一次：再点就把刚展开的弹层又收回去了。
     """
     js = (
-        "(function(){var d=parent.document,k=0;"
+        "(function(){var d=parent.document,k=0,clicked=0;"
+        "function trig(){var box=d.querySelector('.st-key-composer');if(!box)return null;"
+        "var bs=box.querySelectorAll('button');"
+        "for(var i=0;i<bs.length;i++){if((bs[i].textContent||'').indexOf('\\u7cbe\\u786e\\u8bbe\\u7f6e')>=0)return bs[i];}"
+        "return null;}"
         "var t=setInterval(function(){var e=d.querySelector('." + cls + "');"
-        "if(e){clearInterval(t);e.scrollIntoView({behavior:'smooth',block:'center'});"
-        "}else if(++k>25){clearInterval(t);}},80);})();"
+        "if(e){clearInterval(t);e.scrollIntoView({behavior:'smooth',block:'center'});return;}"
+        "if(!clicked){var b=trig();if(b){clicked=1;b.click();}}"
+        "if(++k>40){clearInterval(t);}},100);})();"
     )
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
@@ -5219,29 +5225,17 @@ def _focus_scroll_html(cls: str) -> str:
 
 
 def render_composer() -> None:
-    """页面底部吸底的旅行管家输入卡：一句话、分页胶囊、精确设置开关、开始规划。
+    """页面底部吸底的旅行管家输入卡：精确设置 + 一句话 + 开始规划。
 
-    卡的高度固定（对话回看出现也只是多一格），精确设置摊开的是正文里那张表单卡，
-    见 render_precise_panel()。侧栏已下线，控件在脚本末尾执行，
+    对话气泡与「已套用」提示已移除，只留操作区。控件在脚本末尾执行，
     所以点按钮 / 提交话都走「写标记 + rerun」，下一轮在顶部用 _payload_from_state() 取条件，保证只跑一次。
     """
     with st.container(key="composer"):
-        log = _chat_log()
-        if log:
-            # 管家的回复得有地方落：定高小窗，多说几句也只是里面滚，卡不会一路长高
-            with st.container(height=172, border=False):
-                for message in log[-10:]:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-        open_it = bool(st.session_state.get("_open_precise"))
-        # 精确设置不再用 st.popover：popover 没法被程序打开，AI 填完表就没法「自动摊开」。
-        # 改成状态驱动的正文表单卡（render_precise_panel），吸底卡只留开关，高度恒定。
-        if full_width_button("⚙️ 收起精确设置" if open_it else "⚙️ 精确设置（不想打字就点这个）",
-                             key="toggle_precise"):
-            st.session_state["_open_precise"] = not open_it
-            if not open_it:
-                st.session_state["_focus_key"] = "precise"   # 手动展开也滚过去看一眼
-            st.rerun()
+        with popover_or_expander("⚙️ 精确设置（不想打字就点这个）"):
+            _constraint_fields("f_")
+        # AI 填完表的高亮与滚动：弹层内容只在点开时才进 DOM，所以 <style> 和 iframe
+        # 留在弹层外头先挂上，由 _focus_scroll_html 负责把弹层点开再等字段出现。
+        _filled_field_fx()
 
         bar = st.columns([4, 1], gap="small")
         with bar[0]:
@@ -5258,20 +5252,6 @@ def render_composer() -> None:
             # 控件本轮已实例化，改状态只能等下一次运行，所以先暂存再 rerun
             st.session_state["_pending_chat"] = said
             st.rerun()
-
-
-def render_precise_panel() -> None:
-    """「精确设置」摊开时的那张表单卡，摆在正文末尾、吸底输入卡的正上方。
-
-    放进页面流里而不是塞进输入卡：整展开一米六多高，留在卡里会把输入框顶出视口，
-    任务一要的「输入框绝对固定」当场破防，分页胶囊也会被压在下面。
-    """
-    if not st.session_state.get("_open_precise"):
-        return
-    with st.container(key="precise"):
-        _constraint_fields("f_")
-    _filled_field_fx()
-
 
 
 # ---------------------------------------------------------------------------
@@ -6540,8 +6520,6 @@ def main() -> None:
     # 输入卡只属于首页：结果详情页 / 卡片详情弹窗都不渲染它（不是 display:none）。
     detail_open = bool(str(st.session_state.get("_open_detail") or ""))
     if not result and not detail_open:
-        # 正文里表单卡排在输入卡之前：摊开时它就在输入卡正上方
-        render_precise_panel()
         render_composer()
         # 输入卡高度会随聊天记录变化，主区底部留白跟着它走
         _embed_layout_sync()
