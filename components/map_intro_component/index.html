@@ -47,6 +47,9 @@ button { font-family: inherit; }
 
 .overlay { position: absolute; inset: 0; pointer-events: none; }
 
+/* 落位时切地形用的暗色遮罩：地形开启/降级都在这层后面完成，避免生硬突跳 */
+#relief-scrim { z-index: 7; opacity: 0; background: #05080f; }
+
 /* 暗角 + 颗粒，让画面从“网页”变成“镜头” */
 #vignette {
   z-index: 2;
@@ -491,6 +494,7 @@ button { font-family: inherit; }
     <div id="grain" class="overlay"></div>
     <div id="route-head"></div>
     <div id="fade" class="overlay"></div>
+    <div id="relief-scrim" class="overlay"></div>
 
     <!-- z9：字幕条 + 进度 -->
     <div id="bars">
@@ -686,6 +690,10 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     imagery: bool('imagery', true) ? str('imageryUrl', ESRI) : null,
     dem: bool('terrain', true) ? str('demUrl', TERRARIUM) : null,
     terrainExaggeration: num('exaggeration', 1.12),
+    /* 落位后的地形策略：hill=直接山体阴影（2D 底图 + DEM 明暗，默认）；
+       3d=显式尝试 3D 地形，帧率不达标退山体阴影；auto=先试 3D 再退山体阴影（可选项）；
+       off=不显示地形 */
+    landTerrain: str('landTerrain', 'hill'),
     /* 云层是 6 层全屏 CSS 叠图，软件渲染下很贵：可单独关掉做对照 */
     clouds: bool('clouds', true),
     /* 低帧率自动降档（关地形 / 减云层）；adaptive=0 关掉，三档对照测量用 */
@@ -1743,6 +1751,30 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         } catch (err) { /* ignore */ }
       },
       isTerrainOn: function () { return terrainOn; },
+      tilesLoaded: function () { return map.areTilesLoaded(); },
+      // 落位后的“可见地形”：3D 在软件渲染环境里单帧 ~1000ms（实测），
+      // 退路是用同一份 DEM 画山体阴影（2D 底图 + 明暗），帧率与纯 2D 相同。
+      // 注意 hillshade 与 terrain 共用 source 时 MapLibre 会警告，二者不能同时开。
+      addRelief: function () {
+        if (usingMapbox || !cfg.dem || map.getLayer('relief-hill')) return !!map.getLayer('relief-hill');
+        try {
+          map.addLayer({
+            id: 'relief-hill', type: 'hillshade', source: 'dem',
+            paint: {
+              'hillshade-exaggeration': 0.42,
+              'hillshade-shadow-color': '#080d14',
+              'hillshade-highlight-color': '#aebbcc',
+              'hillshade-accent-color': '#2c3949'
+            }
+          }, map.getLayer('province-line') ? 'province-line' : undefined);
+          return true;
+        } catch (err) { return false; }
+      },
+      setReliefVisible: function (on) {
+        try {
+          if (map.getLayer('relief-hill')) map.setLayoutProperty('relief-hill', 'visibility', on ? 'visible' : 'none');
+        } catch (err) { /* ignore */ }
+      },
       setRouteVisible: function (v) {
         paint('route-base', 'line-opacity', v);
         paint('route-glow', 'line-opacity', v * 0.55);
@@ -1889,10 +1921,8 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       // 地形是这块最贵的：实测软件渲染下片头 21fps → 摘掉后 125fps
       scene.setTerrainEnabled(false);
       // 每帧改 paint 属性的航线流光也一起停掉；彗星头保住最后位置会像卡住，直接藏起
-      if (level === 'minimal') {
-        if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
-        if (headEl) headEl.style.opacity = 0;
-      }
+      if (flowTick) { gsap.ticker.remove(flowTick); flowTick = null; }
+      if (headEl) headEl.style.opacity = 0;
     }
 
     // 片头一开始（0–0.6s，黑场还在淡出、航线未起飞）先采一次真实 rAF。
@@ -1908,7 +1938,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         var dt = performance.now() - t0;
         if (dt < 600) { requestAnimationFrame(frame); return; }
         var fps = frames / (dt / 1000);
-        applyQuality(fps < 18 ? 'minimal' : 'full', fps);
+        applyQuality(fps < 30 ? 'minimal' : (fps < 45 ? 'lite' : 'full'), fps);
       }
       requestAnimationFrame(frame);
     }
@@ -1933,7 +1963,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
         if (dt < 2000) return;
         gsap.ticker.remove(tick);
         var fps = frames / (dt / 1000);
-        if (fps < 18) applyQuality('minimal', fps);
+        applyQuality(fps < 30 ? 'minimal' : (fps < 45 ? 'lite' : 'full'), fps);
       }
       gsap.ticker.add(tick);
     }
@@ -2177,6 +2207,105 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       CI.perf.landedAt = Math.round(performance.now());
     }
 
+    /* ------------------- 落位地形：默认山体阴影，3D 需显式开启 -------------------
+     * MapLibre 5.9 的 terrain 只能全局生效（style spec 只有 source/exaggeration，
+     * 没有 bbox/polygon 之类的范围字段），所以做不了“只给红框内开 3D”。
+     * 实测 Tabbit（软件合成）落位后开 3D：稳定 1.0fps，降 exaggeration 到 0、
+     * DEM maxzoom 8、tileSize 512 都不变；只有 pitch 压到 0 才回到 72fps（但那时
+     * 也看不出 3D）。落位后的可见地形改用同一份 DEM 的山体阴影：实测 71.9fps。
+     * 默认 hill（山体阴影 → 中位帧率 <30 再关 → 纯 2D）；显式 landTerrain=3d/auto
+     * 才走 3D（首帧耗时判定 → 山体阴影 → 纯 2D），30fps 兜底不变。
+     */
+    var reliefDone = false;
+
+    function sampleMedianFrame(dur, done) {
+      var t0 = performance.now();
+      var prev = t0;
+      var dts = [];
+      function tick(now) {
+        dts.push(now - prev);
+        prev = now;
+        if (now - t0 < dur) { requestAnimationFrame(tick); return; }
+        var s = dts.slice(1).sort(function (a, b) { return a - b; });
+        done(s.length ? s[Math.floor(s.length / 2)] : 0);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    // 等瓦片安静下来（连续 quiet 毫秒没在加载）再测帧率；超时也继续，避免网络差时永远不判定
+    function whenTilesSettled(maxWait, quiet, done) {
+      var t0 = performance.now();
+      var okSince = 0;
+      (function check() {
+        var ready = true;
+        try { ready = scene.tilesLoaded(); } catch (err) { ready = true; }
+        var now = performance.now();
+        if (ready) { if (!okSince) okSince = now; } else { okSince = 0; }
+        if ((okSince && now - okSince >= quiet) || now - t0 >= maxWait) { done(); return; }
+        setTimeout(check, 120);
+      })();
+    }
+
+    function reliefTerrainAttr(on) {
+      document.documentElement.setAttribute('data-ci-terrain', on ? 'on' : 'off');
+    }
+
+    function reliefHill() {
+      reliefTerrainAttr(false);
+      if (!scene.addRelief()) {
+        document.documentElement.setAttribute('data-ci-relief', 'none');
+        gsap.to(ui.reliefScrim, { opacity: 0, duration: 0.35, ease: 'power1.out' });
+        return;
+      }
+      document.documentElement.setAttribute('data-ci-relief', 'hill');
+      gsap.to(ui.reliefScrim, { opacity: 0, duration: 0.35, ease: 'power1.out', delay: 0.05 });
+      // 阴影层刚挂上时有一次性的瓦片构建/解码卡顿，立刻采样会把“首次加载”误判成性能不足
+      // （甘孜、九寨沟因此被永久关掉）。先等首屏瓦片稳定（最多 8s）再测稳态帧率；
+      // 连续两次低于 30fps 才关，避免一次 GC/加载抖动就永久丢掉山体阴影。
+      function checkHillFps(attempt) {
+        sampleMedianFrame(1500, function (ms) {
+          if (ms <= 33.4) return;
+          if (attempt > 0) { setTimeout(function () { checkHillFps(attempt - 1); }, 600); return; }
+          scene.setReliefVisible(false);
+          document.documentElement.setAttribute('data-ci-relief', 'none');
+        });
+      }
+      setTimeout(function () {
+        whenTilesSettled(8000, 800, function () { checkHillFps(1); });
+      }, 400);
+    }
+
+    function applyLandingRelief() {
+      if (reliefDone) return;
+      reliefDone = true;
+      var mode = cfg.landTerrain;
+      if (scene.usingMapbox || !cfg.dem || mode === 'off') {
+        document.documentElement.setAttribute('data-ci-relief', 'none');
+        return;
+      }
+      // 切换一律在暗色遮罩后完成：500ms 内淡入 → 决定 → 淡出，避免生硬突跳
+      gsap.to(ui.reliefScrim, { opacity: 0.55, duration: 0.2, ease: 'power1.out' });
+      if (mode === 'hill') { reliefHill(); return; }
+
+      scene.setTerrainEnabled(true);
+      var t0 = performance.now();
+      requestAnimationFrame(function () {
+        // 首帧含一次性的地形网格构建：软件渲染 ~1000ms，能跑 3D 的机器 ~270ms
+        var dt1 = performance.now() - t0;
+        if (dt1 > 600) { scene.setTerrainEnabled(false); reliefHill(); return; }
+        requestAnimationFrame(function () {
+          var dt2 = performance.now() - t0 - dt1;
+          if (dt2 > 120) { scene.setTerrainEnabled(false); reliefHill(); return; }
+          reliefTerrainAttr(true);
+          document.documentElement.setAttribute('data-ci-relief', '3d');
+          gsap.to(ui.reliefScrim, { opacity: 0, duration: 0.35, ease: 'power1.out' });
+          sampleMedianFrame(1600, function (ms) {
+            if (ms > 33.4) { scene.setTerrainEnabled(false); reliefHill(); }
+          });
+        });
+      });
+    }
+
     /* 落位/完成共用的收尾：相机、图层、呼吸、坞舱都在这里落定 */
     function settleVisual() {
       // 终态相机在 build() 里已经算过（cameraForBounds 走的是容器尺寸），这里直接复用，
@@ -2185,13 +2314,10 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
       cam.lng = fc.center.lng; cam.lat = fc.center.lat;
       cam.zoom = fc.zoom; cam.pitch = fc.pitch; cam.bearing = fc.bearing;
       applyCam();
-      // 地形落位后维持片头里的状态：adaptive 路径下片头已摘掉地形，这里不重开 ——
-      // 实测 Tabbit 落位后重开地形，交互从 71fps 掉到 1fps（final zoom ~11 下
-      // DEM 网格重建 + 逐帧地形渲染都吃不住），重开等于把地图弄废。
-      // 只有 adaptive=0 的完整画质路径会一直在挂地形。
-      // 这个取舍需要产品确认；能力本身保留在 scene.setTerrainEnabled(true)。
-      // 同时把状态写进 DOM，便于测试/复测断言“落位后到底恢复了没有”。
+      // 地形落位后维持片头里的状态：adaptive 路径下片头已摘掉地形，这里按
+      // landTerrain 的策略重新决定（默认山体阴影；显式 3d/auto 才试 3D，均带帧率兜底）。
       document.documentElement.setAttribute('data-ci-terrain', scene.isTerrainOn() ? 'on' : 'off');
+      applyLandingRelief();
 
       gsap.to(ui.fade, { opacity: 0, duration: 0.4, ease: 'none' });
       gsap.to([ui.clouds, ui.flash, ui.speedlines, ui.haze], { opacity: 0, duration: 0.3, ease: 'none' });
@@ -2675,6 +2801,7 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
           clouds: document.getElementById('clouds'),
           haze: document.getElementById('haze'),
           flash: document.getElementById('flash'),
+          reliefScrim: document.getElementById('relief-scrim'),
           speedlines: document.getElementById('speedlines'),
           skip: document.getElementById('skip-btn'),
           next: document.getElementById('next-btn'),
