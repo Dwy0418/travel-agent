@@ -5215,6 +5215,9 @@ class _PlanJob:
                 self.result = engine.run_two_stage(self.request, self.payload, _outline_ready)
             except BaseException as exc:  # noqa: BLE001 - 异常交给主线程展示
                 self.error = exc
+                # 先放行主线程（finished 是页面取结果的信号），再打日志：
+                # 打栈可能被管道拖慢，不能让渲染多等它。
+                self.finished.set()
                 # 后台线程的异常原先只换成页面上一句通用文案，云端 Logs 里看不到任何栈。
                 # 这里把完整栈打到 stderr（Streamlit Cloud 会收进 Logs），页面提示不变。
                 try:
