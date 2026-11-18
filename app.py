@@ -5215,6 +5215,14 @@ class _PlanJob:
                 self.result = engine.run_two_stage(self.request, self.payload, _outline_ready)
             except BaseException as exc:  # noqa: BLE001 - 异常交给主线程展示
                 self.error = exc
+                # 后台线程的异常原先只换成页面上一句通用文案，云端 Logs 里看不到任何栈。
+                # 这里把完整栈打到 stderr（Streamlit Cloud 会收进 Logs），页面提示不变。
+                try:
+                    import traceback
+
+                    traceback.print_exc()
+                except Exception:  # noqa: BLE001 - 打日志失败不能再影响主流程
+                    pass
             finally:
                 self.finished.set()
 
