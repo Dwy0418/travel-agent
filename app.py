@@ -5181,6 +5181,8 @@ class _PlanJob:
         self.done: set[int] = set()
         self.live = ""
         self.result: dict[str, Any] | None = None
+        self.outline: dict[str, Any] | None = None
+        self.outline_at: float | None = None
         self.error: BaseException | None = None
         self.finished = threading.Event()
         self.cancelled = threading.Event()
@@ -5205,7 +5207,14 @@ class _PlanJob:
                     trace_callback=self.on_trace,
                     cancelled=self.cancelled.is_set,
                 )
-                self.result = engine.run(self.request, self.payload)
+
+                def _outline_ready(outline: dict[str, Any] | None) -> None:
+                    if outline and (outline.get("itinerary") or {}).get("days"):
+                        # 只写普通属性：所有 st.* 调用都留在主脚本线程
+                        self.outline_at = round(self.elapsed(), 1)
+                        self.outline = outline
+
+                self.result = engine.run_two_stage(self.request, self.payload, _outline_ready)
             except BaseException as exc:  # noqa: BLE001 - 异常交给主线程展示
                 self.error = exc
             finally:
@@ -5251,11 +5260,25 @@ def _go_home() -> None:
         seed["country"] = CONSTRAINT_DEFAULTS["country"]
         seed["province"] = UNLIMITED_PROVINCE
         seed["city"] = UNLIMITED_CITY
+    # 大纲态直接返回首页：先把后台线程停掉，别让它跑完再写回状态
+    job = st.session_state.pop("_agent_job", None)
+    if job is not None:
+        job.cancelled.set()
     st.session_state["f_country"] = CONSTRAINT_DEFAULTS["country"]
     st.session_state["f_province"] = UNLIMITED_PROVINCE
     st.session_state["f_city"] = UNLIMITED_CITY
     st.session_state["_card_page"] = 1
-    for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
+    for key in (
+        "result",
+        "_intro_pending",
+        "_intro_result",
+        "_intro_played",
+        "_open_detail",
+        "_plan_error",
+        "_pdf_cache",
+        "_outline_diff_note",
+        "_stage_timings",
+    ):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -5266,15 +5289,50 @@ def _start_plan(request: str, payload: dict[str, Any]) -> bool:
         st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
         return False
     st.session_state["_last_payload"] = dict(payload)
+    for key in ("_intro_played", "_intro_pending", "_intro_result", "_outline_diff_note", "_stage_timings"):
+        st.session_state.pop(key, None)
     job = _PlanJob(request, payload)
     job.start()
     st.session_state["_agent_job"] = job
     return True
 
 
-def _finish_plan_job(job: _PlanJob) -> None:
-    """后台任务收尾：成功落到 result，失败转成首页上的一句错误。"""
+def _outline_diff_note(outline: dict[str, Any], result: dict[str, Any]) -> str:
+    """对比大纲与校验后的终稿，告诉用户哪里被改过（不静默替换）。"""
+
+    def signature(container: dict[str, Any]) -> set[tuple[int, str, str]]:
+        marks: set[tuple[int, str, str]] = set()
+        for day in (container.get("itinerary") or {}).get("days") or []:
+            for item in day.get("items") or []:
+                if item.get("type") != "attraction":
+                    continue
+                marks.add(
+                    (
+                        int(day.get("day") or 0),
+                        str(item.get("name") or ""),
+                        str(item.get("start") or ""),
+                    )
+                )
+        return marks
+
+    changed = len(signature(outline) ^ signature(result))
+    if not changed:
+        return ""
+    return f"校验后行程有 {changed} 处调整（点位或时间），下方为最终版本。"
+
+
+def _finish_plan_job(job: _PlanJob, source: str = "?") -> None:
+    """后台任务收尾：成功落到 result，失败转成首页上的一句错误。
+
+    source 只用于排障；被取消的旧任务即使晚到，也不能覆盖当前会话的新任务。
+    """
+    if st.session_state.get("_agent_job") is not job:
+        return
     st.session_state.pop("_agent_job", None)
+    st.session_state["_stage_timings"] = {
+        "outline": job.outline_at,
+        "total": round(job.elapsed(), 1),
+    }
     if job.error is not None:
         # 版本错位兜底：app.py 先上线、agent.py 还没跟上时，agent 模块里
         # 可能没有 AgentCancelled。这里用 getattr 退回「非取消」，让界面落到
@@ -5288,8 +5346,13 @@ def _finish_plan_job(job: _PlanJob) -> None:
         return
     result = job.result or {}
     st.session_state["result"] = result
+    if job.outline:
+        note = _outline_diff_note(job.outline, result)
+        if note:
+            st.session_state["_outline_diff_note"] = note
     # 只有「真的跑完一次规划」才放行片头；失败时不播，避免先开场再落进空详情页。
-    if (result.get("itinerary") or {}).get("days"):
+    # 两段式里片头已经在大纲阶段播过，就不要再播一次。
+    if (result.get("itinerary") or {}).get("days") and not st.session_state.get("_intro_played"):
         st.session_state["_intro_pending"] = True
 
 
@@ -5324,7 +5387,7 @@ def _render_plan_job(job: _PlanJob) -> None:
             if st.button("取消规划", key=cancel_key):
                 job.cancelled.set()
                 _snapshot_form()
-                for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
+                for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note", "_stage_timings"):
                     st.session_state.pop(key, None)
                 st.session_state.pop("_agent_job", None)
                 box.empty()
@@ -5332,13 +5395,147 @@ def _render_plan_job(job: _PlanJob) -> None:
         if job.finished.is_set():
             # 先收尾（成功落 result / 失败落 _plan_error），再整页切走：
             # 成功进片头，失败落到首页的错误条，都不在 fragment 里干等
-            _finish_plan_job(job)
+            _finish_plan_job(job, source="plan_tick")
+            box.empty()
+            st.rerun(scope="app")
+        if job.outline is not None:
+            # 大纲先到了：立刻整页切到大纲页，细节继续在后台补
             box.empty()
             st.rerun(scope="app")
 
     _tick()
     # 外层脚本停在等待页，别再往下渲染空态
     st.stop()
+
+
+_OUTLINE_CSS = """
+<style>
+  .ol-banner{
+    display:flex;align-items:center;gap:12px;margin:6px 0 14px;padding:12px 16px;
+    border-radius:14px;border:1px solid rgba(245,158,11,.55);
+    background:linear-gradient(90deg,rgba(245,158,11,.24),rgba(245,158,11,.08));
+    color:#fde68a;font-size:14px;backdrop-filter:blur(6px);
+  }
+  .ol-banner b{display:block;font-size:14px;margin-bottom:2px;color:#fffbeb}
+  .ol-banner span{display:block;font-size:12px;color:#fcd34d;line-height:1.5}
+  .ol-banner.ol-fail{
+    border-color:rgba(248,113,113,.6);
+    background:linear-gradient(90deg,rgba(220,38,38,.3),rgba(220,38,38,.1));
+    color:#fecaca;
+  }
+  .ol-banner.ol-fail b{color:#fff}
+  .ol-banner.ol-fail span{color:#fecaca}
+  .ol-dot{width:10px;height:10px;border-radius:50%;background:#fbbf24;flex:0 0 auto;
+    animation:ol-pulse 1.4s ease-in-out infinite}
+  .ol-tag{margin-left:auto;flex:0 0 auto;padding:3px 10px;border-radius:999px;
+    background:#f59e0b;color:#1f2937;font-weight:600;font-size:12px;letter-spacing:.08em}
+  @keyframes ol-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+  .ol-skel{margin:8px 0 22px;padding:16px;border-radius:14px;
+    border:1px dashed rgba(148,163,184,.5);background:rgba(15,23,42,.5)}
+  .ol-skel-title{font-size:13px;color:#cbd5e1;margin-bottom:10px}
+  .ol-skel-title em{font-style:normal;color:#fbbf24;margin-left:8px}
+  .ol-line{height:12px;border-radius:6px;margin:8px 0;
+    background:linear-gradient(90deg,rgba(148,163,184,.22) 25%,rgba(203,213,225,.46) 37%,rgba(148,163,184,.22) 63%);
+    background-size:400% 100%;animation:ol-shimmer 1.6s ease infinite}
+  .ol-line.w70{width:70%}.ol-line.w45{width:45%}.ol-line.w85{width:85%}
+  @keyframes ol-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+</style>
+"""
+
+
+def _outline_banner_html(job: "_PlanJob") -> str:
+    failed = job.finished.is_set() and job.error is not None
+    if failed:
+        reason = (
+            zh_labels.friendly_error(job.error)
+            if isinstance(job.error, agent.AgentError)
+            else "后台补全中断"
+        )
+        return (
+            "<div class='ol-banner ol-fail'><div><b>细节补全失败，当前只是大纲</b>"
+            f"<span>预算、点间路况、营业时间校验和备注都没有完成：{escape(reason)}。"
+            "可以点「重新规划」再试一次。</span></div>"
+            "<div class='ol-tag' style='background:#dc2626'>未完成</div></div>"
+        )
+    live = escape(job.live or "正在计算路况、预算与营业时间…")
+    return (
+        "<div class='ol-banner'><div class='ol-dot'></div><div><b>大纲已生成，正在补全细节</b>"
+        f"<span>已用 {job.elapsed():.0f} 秒 · {live}</span></div>"
+        "<div class='ol-tag'>大纲</div></div>"
+    )
+
+
+def _abort_outline_job(job: "_PlanJob") -> None:
+    """大纲态返回/取消：先停线程，再清状态回首页，避免后台跑完又写回。"""
+    job.cancelled.set()
+    st.session_state.pop("_agent_job", None)
+    _snapshot_form()
+    _go_home()
+
+
+def _render_outline_job(job: "_PlanJob") -> None:
+    """大纲页：先让用户看到每天去哪，细节在后台补，完成后自动换成终稿。"""
+    inject_css()
+    st.markdown(_OUTLINE_CSS, unsafe_allow_html=True)
+
+    outline = job.outline or {}
+    days = (outline.get("itinerary") or {}).get("days") or []
+    c = outline.get("constraints") or {}
+    if job.finished.is_set() and job.error is None:
+        _finish_plan_job(job, source="outline_top")
+        st.rerun()
+
+    nav = st.columns([1, 1, 2.4])
+    with nav[0]:
+        if st.button("← 返回首页", key="outline_home"):
+            _abort_outline_job(job)
+    with nav[1]:
+        if st.button("取消补全", key="outline_cancel"):
+            _abort_outline_job(job)
+
+    @st.fragment(run_every=0.8)
+    def _status() -> None:
+        st.markdown(_outline_banner_html(job), unsafe_allow_html=True)
+        if job.finished.is_set() and job.error is None:
+            _finish_plan_job(job, source="outline_status")
+            st.rerun(scope="app")
+        if job.finished.is_set() and job.error is not None:
+            if st.button("重新规划", key="outline_retry"):
+                st.session_state.pop("_agent_job", None)
+                _snapshot_form()
+                st.session_state["_run_now"] = True
+                st.rerun(scope="app")
+
+    _status()
+
+    st.markdown(
+        f"#### {escape(str(c.get('city') or '行程'))} {int(c.get('days') or len(days))} 天 · 大纲"
+    )
+    st.caption("以下是 AI 先给出的每日点位。预算、点间路况、营业时间校验仍在后台计算，完成后页面会自动刷新为终稿。")
+
+    head_cols = st.columns([3, 1])
+    with head_cols[0]:
+        st.subheader("行程一览")
+    with head_cols[1]:
+        st.button("📥 下载行程单 PDF", disabled=True, key="outline_pdf")
+        st.caption("补全完成后可用：避免导出缺少预算与校验的半成品。")
+
+    render_itinerary_table(days)
+    if days:
+        st.subheader("每日详情")
+        for day in days:
+            render_day_card(day)
+    else:
+        st.info("大纲里还没有可展示的点位，稍等片刻或返回重试。")
+
+    st.markdown(
+        "<div class='ol-skel'><div class='ol-skel-title'>预算与花费<em>计算中</em></div>"
+        "<div class='ol-line w70'></div><div class='ol-line w45'></div>"
+        "<div class='ol-line w85'></div></div>"
+        "<div class='ol-skel'><div class='ol-skel-title'>行程要点<em>生成中</em></div>"
+        "<div class='ol-line w85'></div><div class='ol-line w70'></div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _supports_fragment() -> bool:
@@ -5365,7 +5562,7 @@ def _render_plan_job_legacy(job: _PlanJob) -> None:
         if st.button("取消规划", key="ci_plan_cancel"):
             job.cancelled.set()
             _snapshot_form()
-            for key in ("result", "_intro_pending", "_intro_result", "_open_detail", "_plan_error", "_pdf_cache"):
+            for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note", "_stage_timings"):
                 st.session_state.pop(key, None)
             st.session_state.pop("_agent_job", None)
             st.rerun()
@@ -5889,6 +6086,11 @@ def show_result(result: dict[str, Any]) -> None:
     if st.button("← 返回首页", key="result_home"):
         _go_home()
 
+    # 大纲到终稿如果有差异，明确告诉用户改了什么，而不是静默替换
+    diff_note = st.session_state.get("_outline_diff_note")
+    if diff_note:
+        st.info(diff_note)
+
     # 冲突自动重排：营业时间撞车时自行顺延，不向用户报错
     soften_notes = reschedule_conflicts(days)
 
@@ -6032,6 +6234,15 @@ def main() -> None:
     # 「取消规划」点一下就是一次正常 rerun，用户不用等后台请求跑完。
     job = st.session_state.get("_agent_job")
     if job is not None:
+        # 两段式：大纲一出来就先播片头，再用大纲页盖住细节补全的等待
+        if job.outline is not None and not st.session_state.get("_intro_played"):
+            st.session_state["_intro_played"] = True
+            inject_css()
+            _play_intro(job.outline)
+            st.stop()
+        if job.outline is not None:
+            _render_outline_job(job)
+            st.stop()
         _render_plan_job(job)
         st.stop()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import re
 import threading
 import time
 from datetime import date, timedelta
@@ -669,9 +670,8 @@ class TravelAgent:
     # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
-    def run(self, request: str, constraints: dict[str, Any]) -> dict[str, Any]:
-        """一次完整规划：多轮工具调用 + 校验重排，最多 config.MAX_ITERATIONS 轮。"""
-        started = time.time()
+    def _setup(self, request: str, constraints: dict[str, Any]) -> dict[str, Any]:
+        """约束归一化 + 城市定位 + 天气/景点预取，两段式与一次性规划共用。"""
         payload = dict(constraints)
         payload["request"] = request or payload.get("request") or ""
         c = build_constraints(payload)
@@ -690,7 +690,15 @@ class TravelAgent:
         self._seed_city(c)
         self._prefetch(c)
         self._check_cancelled()
+        return c
 
+    def run(self, request: str, constraints: dict[str, Any]) -> dict[str, Any]:
+        """一次完整规划：多轮工具调用 + 校验重排，最多 config.MAX_ITERATIONS 轮。"""
+        started = time.time()
+        c = self._setup(request, constraints)
+        return self._plan_loop(c, started)
+
+    def _plan_loop(self, c: dict[str, Any], started: float) -> dict[str, Any]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": self._user_prompt(c["request"], c)},
@@ -849,6 +857,249 @@ class TravelAgent:
         }
         result["markdown"] = render_markdown(result)
         return result
+
+
+    # ------------------------------------------------------------------ #
+    # 两段式：先出大纲（3-5 秒），再复用同一份缓存跑完整规划
+    # ------------------------------------------------------------------ #
+    OUTLINE_SYSTEM = "你是行程大纲助手。只输出 JSON，不调用工具，不写解释。"
+
+    def run_two_stage(
+        self,
+        request: str,
+        constraints: dict[str, Any],
+        on_outline: Callable[[dict[str, Any] | None], None] | None = None,
+    ) -> dict[str, Any]:
+        """先给大纲回调，再返回完整结果。
+
+        大纲与完整规划共用同一次城市定位和天气/景点预取（self.state），
+        所以第二阶段不会再等一遍天气；失败也不阻断，直接按原流程出完整结果。
+        """
+        started = time.time()
+        c = self._setup(request, constraints)
+        outline: dict[str, Any] | None = None
+        try:
+            outline = self._build_outline(c, started)
+        except Exception as exc:  # noqa: BLE001 - 大纲失败不能让整次规划失败
+            self._trace("大纲生成失败，直接进入完整规划", "prepare", detail=str(exc))
+        self.state["outline_seconds"] = round(time.time() - started, 1)
+        if on_outline is not None:
+            try:
+                on_outline(outline)
+            except Exception:  # noqa: BLE001 - UI 回调异常不影响规划
+                _detail_logger.exception("outline_callback_failed")
+        self._check_cancelled()
+        result = self._plan_loop(c, started)
+        result["outline_seconds"] = self.state.get("outline_seconds")
+        return result
+
+    def _build_outline(self, c: dict[str, Any], started: float) -> dict[str, Any] | None:
+        days = self._parse_outline(self._outline_reply(c), c)
+        if not days:
+            days = self._fallback_outline(c)
+        if not days:
+            return None
+        itinerary = {
+            "city": c["city"],
+            "summary": "AI 已给出每日框架，路况、预算与校验正在后台补全。",
+            "days": days,
+            "tips": [],
+        }
+        self._attach_poi_photos(itinerary)
+        return {
+            "status": "outline",
+            "outline": True,
+            "itinerary": itinerary,
+            "constraints": c,
+            "budget": {},
+            "issues": [],
+            "iterations": 0,
+            "tool_calls": self.state.get("tool_call_count", 0),
+            "cache_hits": self.state.get("cache_hits", 0),
+            "elapsed": round(time.time() - started, 1),
+            "trace": list(self.state.get("trace_log") or []),
+            "usage": self.state.get("usage", {}),
+            "markdown": "",
+        }
+
+    def _outline_reply(self, c: dict[str, Any]) -> str:
+        """一次不带工具的轻量请求：只要每天点位 + 时间，输出约 150 token。"""
+        user = (
+            f"{self._prefetch_block(c)}\n\n"
+            f"请为「{c['city']}」{c['days']} 天行程只输出大纲 JSON。\n"
+            "要求：每天 2 个景点；坐标必须取自上面的候选，不要编造；"
+            "只保留 name/start/end/lng/lat 五个字段，不要 note、花费、交通、天气。\n"
+            '格式：{"days":[{"day":1,"date":"YYYY-MM-DD","items":['
+            '{"name":"景点","start":"09:30","end":"11:30","lng":116.1,"lat":24.3}]}]}'
+        )
+        try:
+            message, usage = self._chat(
+                [
+                    {"role": "system", "content": self.OUTLINE_SYSTEM},
+                    {"role": "user", "content": user},
+                ],
+                tools=None,
+                max_tokens=700,
+            )
+        except llm.LLMError as exc:
+            raise AgentError(str(exc)) from exc
+        if usage:
+            self.state.setdefault("outline_usage", usage)
+        return str(message.get("content") or "")
+
+    @staticmethod
+    def _outline_time(value: Any, fallback: str) -> str:
+        text = str(value or "")
+        match = re.search(r"(\d{1,2})\s*[:：]\s*(\d{2})", text)
+        if not match:
+            return fallback
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return fallback
+        return f"{hour:02d}:{minute:02d}"
+
+    def _parse_outline(self, text: str, c: dict[str, Any]) -> list[dict[str, Any]]:
+        """宽松解析模型大纲；坐标优先用候选清单里的真值，防止模型编坐标。"""
+        raw = str(text or "").strip()
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
+        candidate = fenced.group(1) if fenced else raw
+        if "{" in candidate and "}" in candidate:
+            candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+        known: dict[str, tuple[float, float]] = {}
+        for items in (self.state.get("prefetch") or {}).get("pois", {}).values():
+            for poi in items:
+                lng, lat = self._num(poi.get("lng")), self._num(poi.get("lat"))
+                if poi.get("name") and lng is not None and lat is not None:
+                    known[str(poi["name"])] = (lng, lat)
+
+        start = c.get("start_date")
+        try:
+            start_date = date.fromisoformat(str(start)) if start else date.today()
+        except ValueError:
+            start_date = date.today()
+
+        days: list[dict[str, Any]] = []
+        for index, raw_day in enumerate((data.get("days") or [])[: int(c["days"])], 1):
+            entries = raw_day.get("items") or raw_day.get("pois") or []
+            items: list[dict[str, Any]] = []
+            for slot, entry in enumerate(entries[:3]):
+                name = str(entry.get("name") or "").strip()
+                if not name:
+                    continue
+                lng, lat = known.get(name, (None, None))
+                if lng is None:
+                    lng, lat = self._num(entry.get("lng")), self._num(entry.get("lat"))
+                if lng is None or lat is None:
+                    continue
+                if not (73 <= lng <= 136 and 3 <= lat <= 54):
+                    continue
+                fallback_start = "09:30" if slot == 0 else "14:00"
+                fallback_end = "11:30" if slot == 0 else "16:00"
+                items.append(
+                    {
+                        "type": "attraction",
+                        "name": name,
+                        "start": self._outline_time(entry.get("start"), fallback_start),
+                        "end": self._outline_time(entry.get("end"), fallback_end),
+                        "lng": lng,
+                        "lat": lat,
+                        "cost": 0,
+                        "transport": "walking" if slot == 0 else "driving",
+                        "walk_km": 0,
+                        "note": "",
+                        "open_time": "",
+                        "photos": [],
+                    }
+                )
+            if not items:
+                continue
+            day_date = str(raw_day.get("date") or "")
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_date):
+                day_date = (start_date + timedelta(days=index - 1)).isoformat()
+            days.append(
+                {
+                    "day": index,
+                    "date": day_date,
+                    "weather_note": self._outline_weather(day_date),
+                    "items": items,
+                }
+            )
+        return days
+
+    def _outline_weather(self, day_date: str) -> str:
+        for row in (self.state.get("prefetch") or {}).get("weather") or []:
+            if str(row.get("date")) != day_date:
+                continue
+            low, high = row.get("min_temp"), row.get("max_temp")
+            if low is None or high is None:
+                return ""
+            tail = "有雨，带伞" if row.get("is_rainy") else "适合户外"
+            return f"{float(low):.0f}~{float(high):.0f}℃，{tail}"
+        return ""
+
+    def _fallback_outline(self, c: dict[str, Any]) -> list[dict[str, Any]]:
+        """模型大纲不可用时，用预取到的真实 POI 直接排一个两段式骨架。"""
+        pois: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for items in (self.state.get("prefetch") or {}).get("pois", {}).values():
+            for poi in items:
+                name = str(poi.get("name") or "")
+                if not name or name in seen:
+                    continue
+                if self._num(poi.get("lng")) is None or self._num(poi.get("lat")) is None:
+                    continue
+                seen.add(name)
+                pois.append(poi)
+        if not pois:
+            return []
+        slots = (("09:30", "11:30", "walking"), ("14:00", "16:00", "driving"))
+        start = c.get("start_date")
+        try:
+            start_date = date.fromisoformat(str(start)) if start else date.today()
+        except ValueError:
+            start_date = date.today()
+        days: list[dict[str, Any]] = []
+        cursor = 0
+        for index in range(int(c["days"])):
+            items: list[dict[str, Any]] = []
+            for begin, end, transport in slots:
+                if cursor >= len(pois):
+                    break
+                poi = pois[cursor]
+                cursor += 1
+                items.append(
+                    {
+                        "type": "attraction",
+                        "name": str(poi.get("name")),
+                        "start": begin,
+                        "end": end,
+                        "lng": self._num(poi.get("lng")),
+                        "lat": self._num(poi.get("lat")),
+                        "cost": poi.get("cost") or 0,
+                        "transport": transport,
+                        "walk_km": 0,
+                        "note": "",
+                        "open_time": poi.get("open_time") or "",
+                        "photos": [],
+                    }
+                )
+            if not items:
+                break
+            day_date = (start_date + timedelta(days=index)).isoformat()
+            days.append(
+                {
+                    "day": index + 1,
+                    "date": day_date,
+                    "weather_note": self._outline_weather(day_date),
+                    "items": items,
+                }
+            )
+        return days
 
 
 # --------------------------------------------------------------------------- #
