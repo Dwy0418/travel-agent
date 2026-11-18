@@ -2438,6 +2438,18 @@ div[data-baseweb="popover"] div[data-baseweb="calendar"] div[role="button"]:hove
 }
 .cp-title { font-size: 15px; font-weight: 800; color: #FFFFFF; }
 .cp-sub { font-size: 12.5px; color: #9FB2CC; }
+/* 必填项缺失：提示贴在「开始规划」按钮下方。只在本轮渲染，不写状态、不 rerun，
+   所以它不会把首页顶回第一页，也不会让输入卡重新滑入。 */
+.ci-composer-hint {
+    margin: 6px 0 2px;
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: rgba(120, 53, 15, 0.5);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    color: #FDE68A;
+    font-size: 13px;
+    line-height: 1.5;
+}
 /* 对话回看只在真有内容时出现，默认收起成一条可滚的小窗 */
 .st-key-composer div[data-testid="stVerticalBlockBorderWrapper"] {
     border: none !important;
@@ -4899,6 +4911,33 @@ def _payload_from_state() -> dict[str, Any]:
     }
 
 
+def _missing_requirements(payload: dict[str, Any], idea: str = "") -> list[str]:
+    """开跑前的必填项检查：只读 payload / 文案，不改 session_state、不发请求。
+
+    目的地允许写在「大致想法」里（如「去成都」），所以文案解析到的城市同样算数，
+    否则校验会比实际规划更严，把本来能跑的输入挡在门外。
+    """
+    found = parse_plan_text(idea) if idea else {}
+    missing: list[str] = []
+    if not str(payload.get("origin") or found.get("origin") or "").strip():
+        missing.append("出发地")
+    if not str(payload.get("city") or "").strip() and not str(found.get("city") or "").strip():
+        missing.append("目的地")
+    if int(payload.get("people") or 0) < 1:
+        missing.append("出行人数")
+    if float(payload.get("budget") or 0) < 200:
+        missing.append("总预算")
+    return missing
+
+
+def _missing_hint_html(missing: list[str]) -> str:
+    return (
+        "<div class='ci-composer-hint'>⚠️ 还差"
+        + "、".join(escape(name) for name in missing)
+        + "，填好再点「开始规划」~</div>"
+    )
+
+
 def _idea_input(key: str) -> str:
     """统一的「大致想法」输入区：标题 + 提示 + 自由文本。
 
@@ -4970,8 +5009,18 @@ def render_composer() -> None:
         bar = st.columns([3, 1], gap="small")
         with bar[0]:
             st.caption("出发地、目的地、日期和这句话会一起交给规划器。")
+        clicked = False
         with bar[1]:
-            if full_width_button("开始规划", kind="primary"):
+            clicked = full_width_button("开始规划", kind="primary")
+        # 必填项校验放在最前：缺失时只在这一轮往按钮下面画一行提示，
+        # 不写 _run_now、不 rerun。页面结构不变，首页吸附容器的滚动位置
+        # 和输入卡状态都不会被重置，连点也只多出一行提示。
+        if clicked:
+            payload_now = _payload_from_state()
+            missing = _missing_requirements(payload_now, str(st.session_state.get("f_idea") or ""))
+            if missing:
+                st.markdown(_missing_hint_html(missing), unsafe_allow_html=True)
+            else:
                 st.session_state["_run_now"] = True
                 st.rerun()
 

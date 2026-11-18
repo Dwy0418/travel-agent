@@ -349,6 +349,44 @@ check(last.get("request") == "带老人，想去室内博物馆，别太累"
 check(last.get("people") == 2, "文案没写人数时，保持人数框当前值", str(last.get("people")))
 
 # ---------------------------------------------------------------------------
+# 2a0. 必填项前置校验：缺失时只在按钮下提示，不建任务、不写状态、不二次 rerun
+# ---------------------------------------------------------------------------
+check(A._missing_requirements({"origin": "北京市", "people": 2, "budget": 3000}, "") == ["目的地"],
+      "空白条件只缺目的地（出发地/日期/人数/预算都有默认值）",
+      str(A._missing_requirements({"origin": "北京市", "people": 2, "budget": 3000}, "")))
+check(A._missing_requirements({"origin": "", "people": 2, "budget": 3000}, "") == ["出发地", "目的地"],
+      "出发地和目的地都空时两个都点名",
+      str(A._missing_requirements({"origin": "", "people": 2, "budget": 3000}, "")))
+check(A._missing_requirements({"origin": "北京市", "people": 2, "budget": 3000}, "去成都玩3天") == [],
+      "目的地写在「大致想法」里也算填了",
+      str(A._missing_requirements({"origin": "北京市", "people": 2, "budget": 3000}, "去成都玩3天")))
+
+ax = new_at()
+next(b for b in ax.button if str(b.label) == "开始规划").click()
+ax.run()
+assert not ax.exception, f"缺必填项点开始规划抛异常：{ax.exception}"
+check(ax.session_state.get("_agent_job") is None and ax.session_state.get("_last_payload") is None,
+      "缺目的地时不建规划任务、不发请求",
+      f"job={ax.session_state.get('_agent_job')} payload={ax.session_state.get('_last_payload')}")
+check(not ax.session_state.get("_run_now"), "缺目的地时不写 _run_now，不触发第二轮 rerun")
+check(any("还差目的地" in str(m.value) for m in ax.markdown),
+      "提示直接渲染在页面上（按钮下方那一行）",
+      "; ".join(str(m.value)[:40] for m in ax.markdown if "还差" in str(m.value))[:120])
+check(not any("还缺一个具体城市" in str(w.value) for w in ax.warning),
+      "不再往页面顶部丢「还缺城市」警告条",
+      "; ".join(str(w.value)[:30] for w in ax.warning)[:100])
+
+ay = new_at()
+ay.text_area(key="f_idea").set_value("去成都玩3天，想吃火锅").run()
+next(b for b in ay.button if str(b.label) == "开始规划").click()
+ay.run()
+assert not ay.exception, f"文案里有目的地时开跑抛异常：{ay.exception}"
+check(ay.session_state.get("_last_payload") is not None,
+      "文案里写了目的地就放行，正常开跑",
+      str(ay.session_state.get("_last_payload"))[:60])
+settle(ay)
+
+# ---------------------------------------------------------------------------
 # 2a2. 人数从大致想法提取：明确说法覆盖人数框，含混说法保持原值并提示
 # ---------------------------------------------------------------------------
 ap = new_at()
@@ -526,7 +564,7 @@ check("适合" in body and ("节奏偏满" in body or "节奏偏松" in body), "
 
 # 用户真的在「大致想法」里写过字之后，同一行要换成「你说过」并引用原句
 chatted = new_at()
-said = "带老人，想去室内博物馆"
+said = "带老人去成都，想去室内博物馆"
 chatted.text_area(key="f_idea").set_value(said).run()
 next(b for b in chatted.button if str(b.label) == "开始规划").click()
 chatted.run()
