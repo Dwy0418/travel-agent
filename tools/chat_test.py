@@ -41,6 +41,21 @@ def texts(at: AppTest) -> str:
     return "\n".join(md.value for md in at.markdown)
 
 
+def settle(at: AppTest, timeout: int = 90) -> str:
+    """等后台规划线程收尾再重跑一轮，把要说的话取回来。
+
+    线程里的报错不会冒泡到主线程，app 是下一轮才把它渲染成一条 st.error 的。
+    离线只是缺密钥，几毫秒就返回，也可能点完那一轮就已经自己收尾切页了，
+    所以这里两种情况都要接住：还在跑就等它，已经收干净就直接读页面。
+    """
+    job = at.session_state.get("_agent_job")
+    if job is not None:
+        job.finished.wait(timeout=timeout)
+        at.run()
+        assert not at.exception, f"规划收尾抛异常：{at.exception}"
+    return " ".join([str(i.value) for i in at.info] + [str(e.value) for e in at.error])
+
+
 # ---------------------------------------------------------------------------
 # 1. 自然语言解析：只说到的才算数
 # ---------------------------------------------------------------------------
@@ -84,7 +99,19 @@ check("我是你的旅行管家" not in texts(at), "输入卡上不再有管家�
 check("请用大白话描述你的出行计划" not in texts(at),
       "副标题也移除，输入卡只剩精确设置 + 输入框 + 开始规划")
 check("已套用「" not in texts(at), "「已套用…」提示气泡不再渲染")
-check(any(sb.key == "f_country" for sb in at.selectbox), "『精确设置』里的级联下拉照样渲染（收起也在）")
+# 精确设置改成状态驱动的正文表单卡（popover 没法被程序打开，AI 自动摊开就用不了）：
+# 默认收起，摊开时才渲染整组控件。
+check(not any(sb.key == "f_country" for sb in at.selectbox),
+      "精确设置默认收起：打字前不把整张表单摊开")
+check(any(str(b.label).startswith("⚙️ 精确设置") for b in at.button), "收起时留着一个展开按钮")
+atdrawer = new_at()
+atdrawer.button(key="toggle_precise").click()
+atdrawer.run()
+assert not atdrawer.exception, f"展开精确设置抛异常：{atdrawer.exception}"
+check(any(sb.key == "f_country" for sb in atdrawer.selectbox), "点一下才把级联下拉摊开")
+check(any(sb.key == "f_origin" for sb in atdrawer.selectbox), "展开后基础信息第一栏就是出发地")
+check(atdrawer.session_state["f_origin"] == A.ORIGIN_DEFAULT, "出发地默认值落在候选里",
+      str(atdrawer.session_state["f_origin"]))
 check(any(str(b.label) == "开始规划" for b in at.button), "『开始规划』还在，只是搬进了输入卡")
 
 cards_all, scope_all = A.pick_recommendations()
@@ -117,15 +144,53 @@ check("addEventListener('wheel'" in snap_src and "passive: false" in snap_src
       "滚轮监听 passive:false，切页后冻结 800ms")
 check("sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' })" in snap_src,
       "滚轮一次只平滑跳到目标页，不会连飞两三页")
-check("root.classList.toggle('ci-last-page'" in snap_src
-      and "html.ci-last-page .st-key-composer" in snap_src
-      and "transform: translateY(calc(100% + 24px))" in snap_src,
-      "末页 IntersectionObserver 用 translateY 滑入输入卡，不改高度")
+check("ci-last-page" not in snap_src and "translateY(calc(100% + 24px))" not in snap_src,
+      "输入卡不再「末页才滑进来」：任务一要的是任何一页都常驻底部，只有详情弹窗才隐藏")
+# AI 自动定位要 scrollIntoView，被填的那个字段得给吸底卡让出底部余量
+margin_rule = re.search(r'\.st-key-precise,\n\.st-key-precise \[class\*="st-key-f_"\] \{([^}]*)\}', snap_src)
+check(margin_rule is not None and "--ci-composer-h" in margin_rule.group(1),
+      "底部余量挂在字段上、跟着输入卡实时高度走，被填字段不会藏在卡后面",
+      margin_rule.group(1).strip()[:60] if margin_rule else "没有这条规则")
 grid_rules = "\n".join(re.findall(r":has\(\.pc-face\)[^{]*\{[^}]*\}", snap_src))
 check("repeat(6" not in grid_rules, "卡片网格列数只剩 8 的因数（1/2/4），末行不缺格")
 check("content-visibility" not in snap_src, "页外网格的 content-visibility 随三页同屏一起退场")
 check(".rec-head" not in snap_src and ".pc-page-scope {" in snap_src,
       "旧的一屏标题样式摘干净了，范围提示改由每页页首接手")
+
+# 任务一：输入框必须「全局唯一 + 绝对固定」，翻页/滚动都不跟着动
+composer_css = re.search(r"\.st-key-composer \{([^}]*)\}", snap_src)
+assert composer_css, "app.py 里找不到 .st-key-composer 规则"
+cbody = composer_css.group(1)
+check("position: fixed" in cbody and "bottom:" in cbody, "输入卡是 fixed 钉底，不随主区滚动", cbody[:50].strip())
+check("z-index: 50" in cbody, "输入卡层级 50，卡片从它下面滚过去")
+check("max-height: calc(100vh" in cbody and "overflow-y: auto" in cbody,
+      "输入卡自带高度上限，内容再多也顶不出视口")
+check(snap_src.count('with st.container(key="composer"):') == 1, "全页只有一张输入卡",
+      str(snap_src.count('with st.container(key="composer"):')))
+pads = [int(v) for v in re.findall(r"padding-bottom: calc\(var\(--ci-composer-h, (\d+)px\)", snap_src)]
+check(bool(pads) and max(pads) >= 200,
+      "主区底部留白跟着输入卡实时高度走（兜底 ≥200px），末排卡片不被盖住", str(pads))
+check("_embed_layout_sync()" in snap_src and "--ci-composer-h" in snap_src,
+      "输入卡高度由 _embed_layout_sync 写进 CSS 变量，聊天记录把卡片撑高也不会盖住内容")
+check("if not result and not detail_open:" in snap_src,
+      "详情弹窗打开时根本不渲染输入卡，不与弹窗抢位置")
+precise_css = re.search(r"\.st-key-precise \{([^}]*)\}", snap_src)
+check(precise_css is not None and "max-height" not in precise_css.group(1),
+      "表单卡不再自带滚动：它回到页面流里，跟着主区滚",
+      (precise_css.group(1).strip()[:50] if precise_css else "没有这条规则"))
+check(precise_css and "scroll-margin" not in precise_css.group(1),
+      "余量不再写死在整张卡上：只有真正被滚过去的字段带让位",
+      precise_css.group(1).strip()[:50] if precise_css else "没有这条规则")
+comp_fn = re.search(r"def render_composer\(\) -> None:[\s\S]*?\n(?=def )", snap_src)
+panel_fn = re.search(r"def render_precise_panel\(\) -> None:[\s\S]*?\n(?=def )", snap_src)
+check(comp_fn is not None and panel_fn is not None, "输入卡与表单卡各自一个函数")
+check(comp_fn and "_constraint_fields" not in comp_fn.group(0),
+      "表单没留在吸底卡里：卡的高度只由开关、按钮和输入行决定")
+check(comp_fn and "popover_or_expander" not in comp_fn.group(0),
+      "精确设置不再用 st.popover：popover 打不开，AI 自动摊开就没法做")
+head_body = snap_src[snap_src.index("def main() -> None:"):]
+check(head_body.index("render_precise_panel()") < head_body.index("render_composer()"),
+      "正文里表单卡排在输入卡之前：摊开时它就在输入卡正上方")
 
 # 冷启动闪烁的根因是「卡片 CSS 出现得太晚」：脚本从 hero 到卡片中间要跑一千多毫秒，
 # 等 background-image 生效才发请求，第一页的封面就空着那一秒多。preload 必须挂在最早的块里。
@@ -166,6 +231,82 @@ check(isinstance(start, date) and isinstance(end, date) and (end - start).days =
       "「改成5天」只动天数不动日期", f"{start}~{end}")
 check(at.session_state["f_companions_2"] is True, "「带上爸妈」追加了带老人，没挤掉情侣/夫妻")
 check(at.session_state["f_city"] == "扬州市", "增量修改不会把已定的城市清空")
+
+# ---------------------------------------------------------------------------
+# 2b. 地标 -> 省市：「嘉应大学附近」必须认成广东梅州，且只填说到的那几栏
+# ---------------------------------------------------------------------------
+tree_pairs = {(prov, city) for provinces in A.DESTINATION_TREE.values()
+              for prov, cities in provinces.items() for city in cities}
+bad_alias = [f"{name}→{prov}{city}" for name, (prov, city) in A.LANDMARK_ALIAS.items()
+             if (prov, city) not in tree_pairs]
+check(not bad_alias, "地标表的省市全在目的地树里，填进去不会被下拉框退回「不限」", "; ".join(bad_alias[:3]))
+check(A.LANDMARK_ALIAS["嘉应大学"] == ("广东省", "梅州市"), "收录表里嘉应大学就是梅州")
+check(all(A._country_of(prov) in A.DESTINATION_TREE for prov, _ in A.LANDMARK_ALIAS.values()),
+      "地标反查出的国家标签都是下拉框里的真选项")
+
+ji = A.parse_plan_text("嘉应大学附近好玩的地方")
+check(ji.get("city") == "梅州市" and ji.get("province") == "广东省",
+      "「嘉应大学附近好玩的地方」认成广东省梅州市", str(ji))
+check(ji.get("landmark") == "嘉应大学", "地标名留在结果里，回复才说得出「按地标定位」")
+check("days" not in ji and "budget" not in ji and "people" not in ji,
+      "一句话里没说的天数/预算/人数不瞎补", str(sorted(ji)))
+check(A.parse_plan_text("下周去乌镇玩两天").get("city") == "嘉兴市", "「乌镇」认到嘉兴，不是编一个市")
+check(A.parse_plan_text("帮我随便安排一下").get("landmark") is None, "没有地标时不硬凑一个")
+
+sh = A.parse_plan_text("从上海出发去杭州玩3天")
+check(sh.get("origin") == "上海市", "「从上海出发」认成出发地", str(sh))
+check(sh.get("city") == "杭州市", "出发段先摘掉，目的地认的是杭州不是上海", str(sh))
+check(A._parse_origin("随便找天出去玩")[0] is None, "没说出发地就不填，留着默认值")
+
+# 真界面：说一句话 -> 面板自己展开 + 城市选中 + 高亮滚动，且只在提交后发生
+atj = new_at()
+seen_comp: list[str] = []
+_real_comp = A.st.components.v1.html
+
+
+def _spy_comp(src: str, *args: Any, **kw: Any) -> Any:
+    seen_comp.append(str(src))
+    return _real_comp(src, *args, **kw)
+
+
+A.st.components.v1.html = _spy_comp
+try:
+    atj.session_state["_pending_chat"] = "嘉应大学附近好玩的地方"
+    atj.run()
+    assert not atj.exception, f"自动填表抛异常：{atj.exception}"
+finally:
+    A.st.components.v1.html = _real_comp
+check(atj.session_state["f_city"] == "梅州市", "面板里的城市真的选到了梅州", str(atj.session_state["f_city"]))
+check(atj.session_state["f_province"] == "广东省", "省份跟着选中")
+check(atj.session_state.get("_open_precise") is True, "抽到字段才自动摊开精确设置")
+check(any(sb.key == "f_city" for sb in atj.selectbox), "摊开之后城市下拉框确实渲染了")
+_scroll = next((s for s in seen_comp if "scrollIntoView" in s), "")
+check('.st-key-f_city' in _scroll, "滚过去停的第一个字段是城市，不是累计原话", _scroll[:80])
+check("_focus_key" not in atj.session_state, "高亮/滚动标记是一次性的，下一轮不再拽视野",
+      str(atj.session_state.get("_focus_key")))
+check("pfFlash" in texts(atj), "自动填过的字段带蓝框闪动")
+check("已按地标「嘉应大学」" in texts(atj), "回复里交代了是怎么定位的",
+      [ln for ln in texts(atj).splitlines() if "地标" in ln][:1])
+check(any("scrollIntoView" in s and ".st-key-f_city" in s for s in seen_comp),
+      "滚动是在组件 iframe 里对 parent.document 做的", next((s[:70] for s in seen_comp), "没发出组件"))
+check(any("behavior:'smooth'" in s and "block:'center'" in s for s in seen_comp),
+      "滚动参数按需求写：平滑 + 居中")
+check(atj.session_state.get("_filled_keys") is None, "高亮标记只消费一次，之后重跑不再闪",
+      str(atj.session_state.get("_filled_keys")))
+
+atj.run()
+assert not atj.exception, f"再跑一轮抛异常：{atj.exception}"
+check(not any("pfFlash" in str(m.value) for m in atj.markdown[-1:]), "下一轮不再重复高亮")
+
+# 「随便安排」这种没抽到结构化字段的：面板保持收起，按默认值走
+atk = new_at()
+atk.session_state["_pending_chat"] = "帮我随便安排一下"
+atk.run()
+assert not atk.exception, f"空抽取抛异常：{atk.exception}"
+check(not atk.session_state.get("_open_precise"), "啥都没抽到就不摊开面板",
+      str(atk.session_state.get("_open_precise")))
+check(not any(sb.key == "f_city" for sb in atk.selectbox), "面板没展开时不渲染整张表单")
+check("f_request" not in str(atk.session_state.get("_focus_key") or ""), "原话累计串不算自动填的字段")
 
 # ---------------------------------------------------------------------------
 # 3. 点卡片图片 -> 详情（要点 + 图集 + 视频）
@@ -281,7 +422,8 @@ try:
     check(at.session_state.get("_open_detail") == rel_target, "点推荐位只把弹窗换到那张卡", str(at.session_state.get("_open_detail")))
     # 弹窗里的按钮被点时，那一轮必然先把旧弹窗打开一次才拿到 click，所以稳定后最后一次才是新卡
     check(opens[-1] == rel_target and opens.count(rel_target) == 1, "稳定后打开的是新那张卡", str(opens[-3:]))
-    check(not at.error, "点推荐位没有触发规划（离线缺密钥才会报错）", str([str(e.value)[:40] for e in at.error])[:80])
+    check(not at.error and at.session_state.get("_agent_job") is None,
+          "点推荐位没有触发规划（离线缺密钥才会报错）", str([str(e.value)[:40] for e in at.error])[:80])
     body_rel = texts(at)
     check("已套用" not in body_rel, "点推荐位不再吐「已套用」")
     check("这趟适合谁" in body_rel, "换卡之后还是详情弹窗，不是回列表")
@@ -305,10 +447,71 @@ try:
     at.button(key=f"go_{opened_key}").click()
     at.run()
     assert not at.exception, f"点规划抛异常：{at.exception}"
-    check(len(at.error) > 0, "只有『就按这个行程规划』会开跑", str(len(at.error)))
+    # 规划挪进了后台线程：起任务那一轮可能已经跑完（离线只是缺密钥，几毫秒就返回），
+    # 所以这里只认「任务起过了」，进度卡和取消出口在下面单独用假任务验。
+    check(at.session_state.get("_agent_job") is not None or at.session_state.get("_last_payload") is not None,
+          "只有『就按这个行程规划』会起规划任务")
+    note = settle(at)
+    check(at.session_state.get("_agent_job") is None, "任务结束后从 session_state 收干净")
+    check(bool(note), "离线缺密钥时以一句人话收尾，而不是把异常抛在页面上", note[:60])
     check(len(opens) == opened_before + 1, "开跑后详情不再重开，只多算拿到 click 那一轮", f"{len(opens)} vs {opened_before}")
 finally:
     A.st.dialog = _real_dialog
+
+
+# ---------------------------------------------------------------------------
+# 3a2. 规划进度卡：按真实阶段推进 + 「取消规划」真的掐断
+# ---------------------------------------------------------------------------
+# 塞一个「起了但没跑完」的假任务：线程压根没 start，卡片才会稳定停在 running 态
+app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+atm = new_at()
+job = A._PlanJob("成都三日游", {"city": "成都市", "province": "四川省", "days": 3})
+atm.session_state["_agent_job"] = job
+atm.run()
+assert not atm.exception, f"进度卡那一轮抛异常：{atm.exception}"
+plan_card = "\n".join(str(m.value) for m in atm.markdown)
+check("ci-plan-card" in plan_card and "正在为您规划行程" in plan_card, "任务在跑时进度卡铺在页面上")
+check("role='status'" in plan_card, "进度卡对读屏软件报 status，不用听整页")
+check(plan_card.count("class='ci-plan-step ") == len(A.PLAN_STAGES),
+      "卡上按阶段逐行列出，用户知道还剩哪几步", str(plan_card.count("class='ci-plan-step ")))
+cancel_keys = [str(b.key) for b in atm.button if str(b.key).startswith("ci_plan_cancel")]
+check(cancel_keys == [f"ci_plan_cancel_{job.run_id}"],
+      "卡上留了「取消规划」出口，且 key 跟着这趟 run_id，不会撞上上一趟的残 button", str(cancel_keys))
+check("data-ci-cancel='1'" in plan_card and "_embed_plan_ticker(job.run_id)" in app_src,
+      "卡片里的视觉按钮由同源 iframe 转给那个真 st.button，点得动")
+# 进度只认阶段，不掺时间因子：慢请求不该先把条跑满再干等
+def fill_pct(done: set[int], elapsed: float) -> str:
+    m = re.search(r"ci-plan-fill' style='width:(\d+)%", A._plan_progress_html(done, "", elapsed))
+    return m.group(1) if m else ""
+
+
+check(fill_pct(set(), 54.0) == fill_pct(set(), 0.0),
+      "同一阶段下 54 秒和刚起步长得一样，不会「跑满卡住」", f"{fill_pct(set(), 54.0)}%")
+check(fill_pct(set(range(len(A.PLAN_STAGES))), 54.0) == "100", "阶段全打勾才到 100%")
+
+atm.button(key=f"ci_plan_cancel_{job.run_id}").click()
+atm.run()
+assert not atm.exception, f"点取消抛异常：{atm.exception}"
+check(job.cancelled.is_set(), "点「取消规划」把取消标记递进后台线程")
+check(atm.session_state.get("_agent_job") is None, "取消这一轮就交还主界面，不等后台那步跑完")
+# 卡片真从页面上消失只能在浏览器里看：AppTest 会把上一轮的元素树留着
+cancel_branch = app_src.split('cancel_key = f"ci_plan_cancel_{job.run_id}"')[1].split("if job.finished")[0]
+check('st.session_state.pop("_agent_job", None)' in cancel_branch
+      and "box.empty()" in cancel_branch and 'st.rerun(scope="app")' in cancel_branch,
+      "取消这一支：交回任务 + 抹掉卡片 + 整页 rerun，不停在 fragment 里原地转圈",
+      cancel_branch.replace("\n", " ")[:90])
+
+# 后台线程晚到的收尾：被取消的这一趟既不该飘红，也不该把半成品写成结果
+late = A._PlanJob("成都三日游", {"city": "成都市", "province": "四川省", "days": 3})
+late.error = A.agent.AgentCancelled("用户已取消")
+late.finished.set()
+atm.session_state["_agent_job"] = late
+atm.run()
+assert not atm.exception, f"取消收尾那一轮抛异常：{atm.exception}"
+check(atm.session_state.get("_agent_job") is None, "取消掉的任务收尾后从 session_state 收干净")
+check(not atm.session_state.get("_plan_error") and not atm.error,
+      "用户自己按的取消不当成报错，页面上不飘红")
+check(not atm.session_state.get("result"), "取消的这趟没把半成品写成结果")
 
 def markdown_hits(at: AppTest, needle: str, act: Any) -> int:
     """数「这一次运行里 app 真正发出了几条含 needle 的 markdown」。
@@ -426,6 +629,13 @@ check(len(payload.get("pois") or []) == 1
       str([p.get("name") for p in payload.get("pois") or []]))
 check(event == {"type": "intro:done", "reason": "next"} and stored == event,
       "intro:done 回传后写进 _intro_result，下一轮才离开片头", str(stored))
+# 详情页那份出发地用独立 key：面板摊开时两处同时渲染，重名会直接 DuplicateElementKey
+at_d = new_at()
+d_key = next(str(b.key) for b in at_d.button if str(b.key).startswith("detail_"))
+at_d.button(key=d_key).click()
+at_d.run()
+assert not at_d.exception, f"打开详情弹窗抛异常：{at_d.exception}"
+check(any(str(sb.key) == "d_origin" for sb in at_d.selectbox), "详情页里也能选出发地")
 
 # 卡片正面必须自带「几天几晚 + 价格」，否则挑起来心里没底
 face = A._card_face(card, 0)
@@ -462,12 +672,11 @@ at.run()
 assert not at.exception, f"app 抛异常：{at.exception}"
 check(at.session_state["f_city"] not in ("", A.UNLIMITED_CITY),
       "套用后城市已回填", str(at.session_state["f_city"]))
-check(len(at.error) > 0, "套用后直接进了规划（离线清空密钥，报的是规划失败）", str(len(at.error)))
-check(not any("1-10" in str(e.value) or "请先填写目的地" in str(e.value) for e in at.error),
-      "规划失败的原因是缺密钥，不是条件不合法",
-      "; ".join(str(e.value)[:60] for e in at.error)[:120])
-check(not any("把「城市」选成具体城市" in str(w.value) for w in at.warning),
-      "不再是「请先选城市」那种没开跑的情况")
+note = settle(at)
+check(bool(note), "套用后直接进了规划（离线清空密钥，报的是规划失败）", note[:60])
+check("1-10" not in note and "请先填写目的地" not in note,
+      "规划失败的原因是缺密钥，不是条件不合法", note[:120])
+check("把「城市」选成具体城市" not in note, "不再是「请先选城市」那种没开跑的情况")
 prefs = [i for i in range(len(A.PREFERENCE_OPTIONS)) if at.session_state.get(f"f_prefs_{i}")]
 check(len(prefs) > 0, "套用后卡片里的偏好真的勾上了", str(prefs))
 # 天数早就不走滑块了，卡片说的几天必须落到「出发 + 回程」这两个日期上

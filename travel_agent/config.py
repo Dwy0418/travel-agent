@@ -58,6 +58,10 @@ def _cfg(name: str, default: str = "") -> str:
 
 DEEPSEEK_API_KEY = _cfg("DEEPSEEK_API_KEY")
 AMAP_KEY = _cfg("AMAP_KEY")
+# 3D 片头用的是高德「Web端(JS API)」类型，和上面那个「Web服务」类型不通用；
+# 安全密钥（jscode）是 2.0 SDK 强制的第二把，缺它地图直接不初始化。
+AMAP_JS_KEY = _cfg("AMAP_JS_KEY")
+AMAP_JS_SECURITY = _cfg("AMAP_JS_SECURITY")
 DEEPSEEK_BASE_URL = _cfg("DEEPSEEK_BASE_URL", "https://api.deepseek.com/beta").rstrip("/")
 DEEPSEEK_MODEL = _cfg("DEEPSEEK_MODEL", "deepseek-chat")
 # strict 工具模式需要 beta 端点；置 0 可关闭（兼容不支持 strict 的账号）
@@ -96,3 +100,12 @@ def require_keys(need_llm: bool = True) -> list[str]:
     if not AMAP_KEY:
         missing.append("AMAP_KEY")
     return missing
+
+
+def map_js_ready() -> bool:
+    """3D 片头要两把都齐才起得来：JS Key 缺了 SDK 报错，安全密钥缺了地图空白。
+
+    这两把是可选功能，不进 require_keys——片头当前跑打包内置的 3D 场景，
+    等真实高德瓦片接进来才读它们；缺了不影响规划本身。
+    """
+    return bool(AMAP_JS_KEY and AMAP_JS_SECURITY)

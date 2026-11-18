@@ -26,7 +26,7 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from travel_agent import agent, config, llm, pdf_export, zh_labels
+from travel_agent import agent, config, llm, pdf_export, tools, zh_labels
 
 from components.map_intro import map_intro
 
@@ -36,7 +36,8 @@ KEY_LIMIT = zh_labels.KEY_TRACE_LIMIT
 
 # ---------------------------------------------------------------------------
 # 低版本兼容层：只做「有就用、没有就退」，绝不依赖新版独占特性
-# 说明：不引入 st.pills / st.badge / st.fragment 等新 API。
+# 说明：不引入 st.pills / st.badge 这类新 API；st.fragment 是例外——
+#       「取消规划」必须靠它按时重跑才能收到点击，requirements 里钉死了 streamlit 版本。
 # ---------------------------------------------------------------------------
 def _call_with_fallback(func, *args, **kwargs):
     """按候选关键字逐个降级调用，全部失败就抛最后一个异常。"""
@@ -2209,7 +2210,7 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
     width: 100%;
 }
 .st-key-home_pages { --pc-face-h: clamp(120px, calc((100dvh - 420px) / 2), 240px); }
-/* 末页给吸底输入卡让出高度；输入卡只在末页滑入，其余页 translateY 藏到视口下 */
+/* 末页给吸底输入卡让出高度；输入卡全程钉底，翻到最后一页的末排卡片才需要多让这一截 */
 .st-key-home_pages > div[data-testid="stLayoutWrapper"]:last-child [class*="st-key-home_page_"],
 .st-key-home_pages > div[data-testid="stElementContainer"]:last-child [class*="st-key-home_page_"],
 .st-key-home_pages > [class*="st-key-home_page_"]:last-child {
@@ -2240,8 +2241,12 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
     position: fixed;
     inset-inline: clamp(10px, 2.6vw, 40px);
     bottom: clamp(10px, 1.6vh, 18px);
-    z-index: 30;
+    z-index: 50;
     max-width: 1180px;
+    /* 精确设置在页面流里长，卡里只剩标题、胶囊、按钮和输入行；这条只是兜底上限 */
+    max-height: calc(100vh - 220px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     margin-inline: auto;
     padding: 11px clamp(12px, 1.5vw, 20px) 13px clamp(12px, 1.5vw, 20px);
     background: rgba(15, 23, 42, 0.65);
@@ -2250,17 +2255,29 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-home_pages) {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 18px;
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
-    /* 输入卡只在最后一页升起：transform 滑入滑出，不改 height，
-       否则每页的吸附高度会跟着变。默认藏在视口下 24px。 */
-    transform: translateY(calc(100% + 24px));
-    opacity: 0;
-    visibility: hidden;
-    transition: transform .42s cubic-bezier(.22, .61, .36, 1), opacity .3s ease, visibility .42s;
+    /* 输入卡全程钉在底部：任务一要的就是「翻页、滚动、换视图都不动，只在详情弹窗里隐藏」
+       （隐藏那条走 body:has(div[data-testid="stDialog"])）。
+       原先只在末页用 translateY 升起来，用户在第 1 页根本看不见输入框。 */
 }
-html.ci-last-page .st-key-composer {
-    transform: translateY(0);
-    opacity: 1;
-    visibility: visible;
+/* AI 自动填表摊开的那张表单卡：排在正文末尾、吸底卡正上方，跟着页面一起滚。
+   故意不给 max-height —— 一米六的表单塞进吸底卡会把输入行顶出视口，
+   「输入框绝对固定」当场破防。scroll-margin 给 scrollIntoView 让出卡片高度。 */
+.st-key-precise {
+    max-width: 1180px;
+    margin: 0 auto 8px;
+    padding: 12px clamp(12px, 1.5vw, 20px) 14px;
+    background: rgba(9, 14, 26, 0.82);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid rgba(148, 163, 184, 0.20);
+    border-radius: 18px;
+}
+/* 真正被 scrollIntoView 的是卡片里那个字段（.st-key-f_city 之类），不是整张卡，
+   所以底部余量必须挂在字段上；吸底卡摊开对话回看后能长到三百多像素，
+   高度由 _layout_sync 实时写进 --ci-composer-h，这里跟着它让位。 */
+.st-key-precise,
+.st-key-precise [class*="st-key-f_"] {
+    scroll-margin-block-end: calc(var(--ci-composer-h, 220px) + 24px);
 }
 /* 输入卡里的控件自己还铺着一层实色（主题给的），会把毛玻璃糊回一块板：
    输入框与内层容器全部让路，只留一条细边标出可输入区域。 */
@@ -2702,6 +2719,8 @@ div[data-testid="stMainBlockContainer"]:has(.st-key-composer) {
     color: #FFFFFF;
     border-color: rgba(148, 190, 240, 0.55);
 }
+/* 详情弹窗打开时收起输入卡：弹窗自带返回与「就按这个规划」，两张卡叠在一起只会互相挡 */
+body:has(div[data-testid="stDialog"]) .st-key-composer { display: none; }
 
 /* 详情弹窗：图集两列、视频 16:9，宽屏时并排 */
 [data-testid="stDialog"] .dt-title {
@@ -3345,6 +3364,8 @@ def _payload_to_state(payload: dict[str, Any]) -> None:
     st.session_state["f_country"] = country
     st.session_state["f_province"] = province
     st.session_state["f_city"] = city
+    if payload.get("origin"):
+        st.session_state["f_origin"] = payload["origin"]
 
     st.session_state["f_days"] = int(payload.get("days") or CONSTRAINT_DEFAULTS["days"])
     st.session_state["f_people"] = int(payload.get("people") or CONSTRAINT_DEFAULTS["people"])
@@ -3437,13 +3458,12 @@ def _embed_scroll_top() -> None:
 
 
 def _home_scroll_html(total: int) -> str:
-    """首页整页吸附：滚轮一次切一页、页码实时更新、末页升起输入框、邻页懒加载封面。
+    """首页整页吸附：滚轮一次切一页、页码实时更新、邻页懒加载封面。
 
     全部跑在父页面上下文（st.iframe 与主页面同源）：
     - wheel 必须 passive:false 才能 preventDefault；一次切换后冻结 800ms，
       避免传统鼠标一滚就飞过两三页；
-    - IntersectionObserver 盯最后一页，用 <html> 上的 ci-last-page 类驱动
-      composer 的 translateY 滑入滑出，不改高度；
+    - 输入卡不参与这里：它由 CSS 常驻钉底，翻页时位置一动不动；
     - 封面按当前页 ±1 懒加载，66 张卡片虽然都在 DOM 里，但不会同时下载 66 张图。
     """
     _ = total
@@ -3459,11 +3479,8 @@ def _home_scroll_html(total: int) -> str:
   );
   if (!pages.length) return;
   var last = pages.length - 1;
-  var root = doc.documentElement;
   var idx = Math.max(0, Math.min(last, Math.round(sc.scrollTop / (sc.clientHeight || 1))));
   var locked = 0, raf = 0;
-  // 上一轮如果停在末页，<html> 上的类会留到新页面；先清掉，等 IO 重新判定
-  root.classList.remove('ci-last-page');
 
   function updateLabel() {
     var el = doc.querySelector('.pc-page');
@@ -3506,15 +3523,6 @@ def _home_scroll_html(total: int) -> str:
     locked = now + 800;
     sc.scrollTo({ top: target * sc.clientHeight, behavior: 'smooth' });
   }, { passive: false });
-
-  if (p.IntersectionObserver) {
-    var io = new p.IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        root.classList.toggle('ci-last-page', entry.isIntersecting);
-      });
-    }, { root: sc, threshold: 0.35 });
-    io.observe(pages[last]);
-  }
 
   updateLabel();
   loadNeighbours();
@@ -4102,11 +4110,11 @@ def _render_detail(preset: dict[str, Any]) -> None:
         _go_home()
 
     # 出发地要先实例化再读值：同一轮里读到的是刚选中的那个，片头的航线才画得对。
+    # 弹窗这份 key 是 d_origin，面板那份是 f_origin，两份由 apply_pending_origin() 收成同一真值。
     ocol, _bcol = st.columns([1, 2.2], gap="small")
     with ocol:
-        seed_state("f_origin", ORIGIN_DEFAULT)
-        st.selectbox("出发地", ORIGIN_CITIES, key="f_origin")
-    origin = str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
+        st.selectbox("出发地", ORIGIN_CITIES, key="d_origin")
+    origin = str(st.session_state.get("d_origin") or ORIGIN_DEFAULT)
     # 原来这里是一段手绘 2D 矢量片头（_intro_html），现已由电影级 3D 开场取代。
     # 3D 片头只在「开始规划」跑完后播一次（见 _play_intro / _intro_pending），
     # 浏览详情页、换出发地都不会再触发，符合“只在开始规划时播放”的要求。
@@ -4367,6 +4375,7 @@ def plain_companions(values: list[str]) -> list[str]:
 
 CONSTRAINT_DEFAULTS: dict[str, Any] = {
     "country": "🇨🇳 中国",
+    "origin": ORIGIN_DEFAULT,
     # 初始不预设省市：首屏展示全国热门推荐，用户选到哪一层就联动到哪一层
     "province": UNLIMITED_PROVINCE,
     "city": UNLIMITED_CITY,
@@ -4416,8 +4425,12 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
     def k(name: str) -> str:
         return f"{prefix}{name}"
 
-    # ---------------- 📍 基础信息：国家 -> 省份 -> 城市 ----------------
+    # ---------------- 📍 基础信息：出发地 + 国家 -> 省份 -> 城市 ----------------
     st.markdown("<div class='sec-title'>📍 基础信息</div>", unsafe_allow_html=True)
+
+    # 出发地排在目的地前面：片头的航线、机票/高铁的起算点都看它
+    _sync_select(k("origin"), ORIGIN_CITIES, base.get("origin") or ORIGIN_DEFAULT)
+    origin = st.selectbox("出发地", ORIGIN_CITIES, key=k("origin"), help="开场航线从这个城市起飞")
 
     country_options = list(DESTINATION_TREE)
     _sync_select(k("country"), country_options, base.get("country"))
@@ -4537,6 +4550,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         pref_text = f"{pref_text}；{note}" if pref_text else note
 
     return {
+        "origin": origin,
         "country": country,
         "province": "" if province == UNLIMITED_PROVINCE else province,
         "city": "" if city == UNLIMITED_CITY else city,
@@ -4589,6 +4603,70 @@ def _build_aliases() -> None:
 
 
 _build_aliases()
+
+# 地标 -> 所在省市：用户说的是「嘉应大学附近」，我们要认出梅州市。
+# 收录表是离线路基（自检与评测都靠它，不联网也能答对常见校名/机场/景区），
+# 表外地名交给高德地理编码兜底；两边都拿不到时不硬猜，留给大模型或用户。
+LANDMARK_ALIAS: dict[str, tuple[str, str]] = {
+    "嘉应大学": ("广东省", "梅州市"),
+    "梅州客家": ("广东省", "梅州市"),
+    "汕头大学": ("广东省", "汕头市"),
+    "佛山科学技术学院": ("广东省", "佛山市"),
+    "白云山": ("广东省", "广州市"),
+    "长隆": ("广东省", "广州市"),
+    "乌镇": ("浙江省", "嘉兴市"),
+    "千岛湖": ("浙江省", "杭州市"),
+    "灵隐寺": ("浙江省", "杭州市"),
+    "鼓浪屿": ("福建省", "厦门市"),
+    "武陵源": ("湖南省", "张家界市"),
+    "天山天池": ("新疆维吾尔自治区", "乌鲁木齐市"),
+    "都江堰": ("四川省", "成都市"),
+    "稻城亚丁": ("四川省", "甘孜州"),
+    "解放碑": ("重庆市", "重庆市"),
+    "洪崖洞": ("重庆市", "重庆市"),
+    "大唐不夜城": ("陕西省", "西安市"),
+    "夫子庙": ("江苏省", "南京市"),
+    "外滩": ("上海市", "上海市"),
+    "迪士尼": ("上海市", "上海市"),
+    "环球度假区": ("北京市", "北京市"),
+}
+# 目标省市必须在 DESTINATION_TREE 里，否则回填控件时被 _sync_select 重置成「不限」，
+# 嘴上说梅州、下拉框却是空 —— 自检里有一条专门盯这个。
+# 「XX大学 / XX机场 / XX高铁站」这类叫法：表里没有就拿整段去问高德
+_LANDMARK_TAIL = re.compile(
+    r"[\u4e00-\u9fa5A-Za-z0-9·]{2,8}?"
+    r"(?:大学|学院|校区|机场|高铁站|火车站|汽车站|客运站|博物馆|美术馆|会展中心|体育馆|步行街|古镇|景区|国家森林公园)"
+)
+
+
+def _landmark_place(text: str) -> dict[str, str] | None:
+    """认地标属于哪个省市：先查收录表，查不到再拿整段地名去问高德；认不出就返回 None。"""
+    for name in sorted(LANDMARK_ALIAS, key=len, reverse=True):
+        if name in text:
+            province, city = LANDMARK_ALIAS[name]
+            return {"landmark": name, "country": _country_of(province), "province": province, "city": city}
+    if not config.AMAP_KEY:
+        return None
+    hit = _LANDMARK_TAIL.search(text)
+    if not hit:
+        return None
+    got = tools.geocode(hit.group(0))
+    if not got.get("success") or not got.get("city"):
+        return None
+    city = str(got["city"])
+    country, province = _locate_city(city)
+    return {
+        "landmark": hit.group(0), "country": country,
+        "province": province or country, "city": city,
+    }
+
+
+def _country_of(province: str) -> str:
+    """省名反查国家：本项目只做国内，查不到也就只能回落中国。"""
+    for country, provinces in DESTINATION_TREE.items():
+        if province in provinces:
+            return country
+    return "🇨🇳 中国"
 
 # 同行人 / 偏好：口语关键词 -> 带 Emoji 的控件选项
 _COMPANION_KEYS: list[tuple[str, list[str]]] = [
@@ -4700,6 +4778,21 @@ def _parse_dates(text: str, today: date) -> tuple[date | None, date | None]:
     return parsed[0], parsed[1] if len(parsed) > 1 else None
 
 
+_ORIGIN_TAIL = re.compile(r"从\s*([\u4e00-\u9fa5]{2,8}?)(?:市|市里)?\s*(?:出发|动身|启程|飞|过去)")
+
+
+def _parse_origin(text: str) -> tuple[str | None, str]:
+    """「从上海出发去杭州」里的上海是出发地。返回（出发城市, 去掉出发段之后的句子），
+    出发段必须从目的地匹配里摘掉，否则「从上海出发去杭州」会先撞上上海。"""
+    m = _ORIGIN_TAIL.search(text)
+    if not m:
+        return None, text
+    for alias, hit in sorted(_CITY_ALIAS.items(), key=lambda kv: -len(kv[0])):
+        if len(alias) >= 2 and alias in m.group(1) and hit[2] in ORIGIN_CITIES:
+            return hit[2], (text[: m.start()] + text[m.end():]).strip()
+    return None, text
+
+
 def parse_plan_text(text: str) -> dict[str, Any]:
     """规则解析：只返回这句话里确实说到的字段，没说的键不出现（增量覆盖靠调用方）。"""
     raw = str(text or "").strip()
@@ -4707,13 +4800,22 @@ def parse_plan_text(text: str) -> dict[str, Any]:
     if not raw:
         return found
 
-    place = _pick_name(raw, _CITY_ALIAS)
-    if place and place[2]:
-        found["country"], found["province"], found["city"] = place
+    origin, body = _parse_origin(raw)
+    if origin:
+        found["origin"] = origin
+
+    place = _landmark_place(body)
+    if place:
+        # 「嘉应大学附近」这类说法：先按地标认城，认出来就不再看字面城市名
+        found.update(place)
     else:
-        prov = _pick_name(raw, _PROV_ALIAS)
-        if prov:
-            found["country"], found["province"] = prov
+        hit = _pick_name(body, _CITY_ALIAS)
+        if hit and hit[2]:
+            found["country"], found["province"], found["city"] = hit
+        else:
+            prov = _pick_name(body, _PROV_ALIAS)
+            if prov:
+                found["country"], found["province"] = prov
 
     m = re.search(rf"{_NUM}\s*(?:天|晚|日游)", raw)
     if m:
@@ -4760,8 +4862,12 @@ def parse_plan_text(text: str) -> dict[str, Any]:
 
 _LLM_PARSE_HINT = (
     "你是旅行需求解析器，把用户的口语需求抽成 JSON，只输出 JSON 本身。"
+    "你同时是中国地理专家：用户提到地标（大学、学院、机场、高铁站、商圈、景区、园区）时，"
+    "必须换算成它所在的省份与城市后再填，例如「嘉应大学附近」→ province=广东省、city=梅州市，"
+    "「乌镇」→ 浙江省嘉兴市；拿不准就填 null，不要编。"
     "字段：city(城市名)、province(省份名)、days(整数天数)、people(整数人数)、"
     f"budget(总预算数字，人民币)、per_person(人均预算数字)、start_date(YYYY-MM-DD)、"
+    f"origin(出发城市名)、"
     f"companions(数组，只能取：{'、'.join(COMPANION_LABELS)})、"
     f"preferences(数组，只能取：{'、'.join(PREFERENCE_LABELS)})。"
     "用户没说的字段一律填 null，不要替人猜；相对日期请换算成具体日期。"
@@ -4801,6 +4907,9 @@ def _llm_plan(text: str) -> dict[str, Any] | None:
         value = data.get(key)
         if isinstance(value, (int, float)) and value > 0:
             found[key] = float(value) if key == "budget" else int(value)
+    # 出发地只认候选城市表：模型说「家」或说错名字时宁可忽略，别让下拉框出现非法值
+    if str(data.get("origin") or "").strip() in ORIGIN_CITIES:
+        found["origin"] = str(data["origin"]).strip()
     raw_date = str(data.get("start_date") or "")
     if len(raw_date) == 10:
         try:
@@ -4832,6 +4941,8 @@ def _patch_state(found: dict[str, Any]) -> None:
     if not found:
         return
     today = date.today()
+    if found.get("origin"):
+        st.session_state["f_origin"] = found["origin"]
     if found.get("city"):
         country, province = found.get("country"), found.get("province")
         if not (country and province):
@@ -4880,6 +4991,7 @@ def _state_snapshot() -> dict[str, Any]:
     end = st.session_state.get("f_end")
     days = _span_days(start, end) if isinstance(start, date) and isinstance(end, date) else 0
     return {
+        "origin": st.session_state.get("f_origin", CONSTRAINT_DEFAULTS["origin"]),
         "country": st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"]),
         "province": st.session_state.get("f_province", CONSTRAINT_DEFAULTS["province"]),
         "city": st.session_state.get("f_city", CONSTRAINT_DEFAULTS["city"]),
@@ -4918,6 +5030,7 @@ def _payload_from_state() -> dict[str, Any]:
 
     unlimited = (UNLIMITED_PROVINCE, UNLIMITED_CITY)
     return {
+        "origin": snap["origin"],
         "country": snap["country"],
         "province": "" if snap["province"] in unlimited else snap["province"],
         "city": "" if snap["city"] in unlimited else snap["city"],
@@ -4970,17 +5083,65 @@ def _reply_text(found: dict[str, Any], snapshot: dict[str, Any], *, used_model: 
         gaps.append("玩几天")
     tail = f"还差点信息：{'、'.join(gaps)}。" if gaps else "条件齐了，可以直接开始规划。"
     who = "我让模型又核了一遍，" if used_model and config.DEEPSEEK_API_KEY else ""
+    landmark = str(found.get("landmark") or "")
+    located = (
+        f"已按地标「{landmark}」为您定位到 {_stem(snapshot['province'])}{_stem(city)}，"
+        "省市都填进「精确设置」了，看看还要改什么？\n\n"
+        if landmark else ""
+    )
     return (
         "好的，" + who + "我按这样理解：\n\n"
         + "\n".join(lines)
-        + f"\n\n{tail}要改就直接说（例如「预算改成 6000」「带上爸妈」），"
-        "或者点「精确设置」逐项勾。"
+        + f"\n\n{located}{tail}要改就直接说（例如「预算改成 6000」「带上爸妈」），"
+        "或者展开「精确设置」逐项勾。"
     )
 
 
 def _chat_log() -> list[dict[str, str]]:
     """管家与用户的对话记录。开场白不再入日志：输入卡自己已经说明了怎么用。"""
     return st.session_state.setdefault("chat_log", [])
+
+
+_FIELD_PRIORITY = (
+    "f_city", "f_province", "f_country", "f_origin",
+    "f_start", "f_end", "f_people", "f_budget", "f_prefs", "f_companions",
+)
+# 原话累计串每说一句都会变，不算「抽到了结构化字段」，否则「随便去哪玩」也会把面板弹开
+_FIELD_IGNORED = frozenset({"f_request"})
+# Streamlit 把控件 key 直接拼成 .st-key-<key> 类名，所以能进 CSS 选择器的只有这一种形状
+_FIELD_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _touched_fields(before: dict[str, Any]) -> list[str]:
+    """对比 AI 填表前后的 f_* 状态，按「用户最先看的排前面」返回被改动的控件 key。
+
+    返回的就是 Streamlit 给控件加的 .st-key-<key> 类名，滚动与高亮直接用它定位。
+    """
+    now = {k: v for k, v in st.session_state.items() if k.startswith("f_")}
+    touched = [k for k, value in now.items()
+               if k not in _FIELD_IGNORED and before.get(k) != value]
+
+    def rank(key: str) -> tuple[int, str]:
+        head = re.sub(r"_\d+$", "", key) if re.fullmatch(r"f_(prefs|companions)_\d+", key) else key
+        return (_FIELD_PRIORITY.index(head) if head in _FIELD_PRIORITY else 99, key)
+
+    return sorted(touched, key=rank)
+
+
+def apply_pending_origin() -> None:
+    """出发地全页只有一份真值 _origin_truth，面板 f_origin 和弹窗 d_origin 都只是镜像。
+
+    哪个镜像和真值对不上，就说明那一侧刚被改过：先收成新的真值，再把两边都写齐。
+    必须在控件实例化之前跑 —— 同一轮里改已渲染控件的 session_state 值，Streamlit 会直接抛异常。
+    """
+    truth = str(st.session_state.get("_origin_truth") or ORIGIN_DEFAULT)
+    for key in ("f_origin", "d_origin"):
+        got = str(st.session_state.get(key) or "")
+        if got and got != truth:
+            truth = got
+    st.session_state["_origin_truth"] = truth
+    st.session_state["f_origin"] = truth
+    st.session_state["d_origin"] = truth
 
 
 def apply_pending_chat() -> None:
@@ -4996,25 +5157,91 @@ def apply_pending_chat() -> None:
     rule = parse_plan_text(str(text))
     model = _llm_plan(str(text))
     found = _merge_plan(rule, model)
+    before = {k: v for k, v in st.session_state.items() if k.startswith("f_")}
     _patch_state(found)
 
     lines = st.session_state.setdefault("ask_lines", [])
     lines.append(str(text))
     st.session_state["f_request"] = "；".join(lines[-3:])
 
+    # 抽到了东西才动手：自动展开精确设置 + 记住第一个被改的字段，让界面滚过去并闪一下。
+    # 「随便去哪玩」这种一句话里啥都没有的，changed 为空，面板保持收起、按默认值走。
+    changed = _touched_fields(before)
+    if changed:
+        st.session_state["_open_precise"] = True
+        st.session_state["_filled_keys"] = changed
+        st.session_state["_focus_key"] = changed[0]
+
     log.append({"role": "assistant", "content": _reply_text(found, _state_snapshot(), used_model=bool(model))})
 
 
-def render_composer() -> None:
-    """页面底部吸底的旅行管家输入卡：精确设置 + 一句话 + 开始规划。
+def _filled_field_fx() -> None:
+    """AI 刚填过的字段：蓝框闪一下 + 把第一个滚到视野中间。
 
-    对话气泡与「已套用」提示已移除，只留操作区。控件在脚本末尾执行，
-    所以点按钮 / 提交话都走「写标记 + rerun」，下一轮在顶部用
-    _payload_from_state() 取条件，保证只跑一次。
+    st.markdown 吃 <script>，所以滚动借组件 iframe 执行：它是 srcdoc，和主站同源，
+    能拿到 parent.document（实测过），按 Streamlit 给控件加的 .st-key-<key> 定位。
+    标记只消费一次，否则之后每次重跑都会重新闪一遍、把视野拽走。
+    """
+    keys = [str(k) for k in (st.session_state.pop("_filled_keys", None) or []) if _FIELD_KEY.match(str(k))]
+    focus = str(st.session_state.pop("_focus_key", None) or "")
+    if keys:
+        sel = ", ".join(f".st-key-{k}" for k in keys)
+        st.markdown(
+            "<style>"
+            "@keyframes pfFlash { 0%,100% { box-shadow: 0 0 0 0 rgba(56,189,248,0) }"
+            " 18%,58% { box-shadow: 0 0 0 2px rgba(56,189,248,.92) } }"
+            f"{sel} {{ border-radius: 10px; animation: pfFlash 1.5s ease .2s 1; }}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+    if not _FIELD_KEY.match(focus):
+        return
+    st.components.v1.html(_focus_scroll_html(f"st-key-{focus}"), height=1)
+
+
+def _focus_scroll_html(cls: str) -> str:
+    """在组件 iframe 里把主文档的 cls 元素滚到视野中间（cls 已由 _FIELD_KEY 校验）。
+
+    组件 iframe 和正文是同一轮渲染出来的，DOM 未必已就位，所以轮询等元素出现再滚。
+    表单卡活在正文流里，不在 100dvh 那个吸附容器（.st-key-home_pages）内，
+    滚它不会被拽回吸附点；字段和吸底卡之间的那段距离由 scroll-margin-block-end 让出来。
+    """
+    js = (
+        "(function(){var d=parent.document,k=0;"
+        "var t=setInterval(function(){var e=d.querySelector('." + cls + "');"
+        "if(e){clearInterval(t);e.scrollIntoView({behavior:'smooth',block:'center'});"
+        "}else if(++k>25){clearInterval(t);}},80);})();"
+    )
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
+        "<body style='margin:0;overflow:hidden'><script>" + js + "</script></body></html>"
+    )
+
+
+def render_composer() -> None:
+    """页面底部吸底的旅行管家输入卡：一句话、分页胶囊、精确设置开关、开始规划。
+
+    卡的高度固定（对话回看出现也只是多一格），精确设置摊开的是正文里那张表单卡，
+    见 render_precise_panel()。侧栏已下线，控件在脚本末尾执行，
+    所以点按钮 / 提交话都走「写标记 + rerun」，下一轮在顶部用 _payload_from_state() 取条件，保证只跑一次。
     """
     with st.container(key="composer"):
-        with popover_or_expander("⚙️ 精确设置（不想打字就点这个）"):
-            _constraint_fields("f_")
+        log = _chat_log()
+        if log:
+            # 管家的回复得有地方落：定高小窗，多说几句也只是里面滚，卡不会一路长高
+            with st.container(height=172, border=False):
+                for message in log[-10:]:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+        open_it = bool(st.session_state.get("_open_precise"))
+        # 精确设置不再用 st.popover：popover 没法被程序打开，AI 填完表就没法「自动摊开」。
+        # 改成状态驱动的正文表单卡（render_precise_panel），吸底卡只留开关，高度恒定。
+        if full_width_button("⚙️ 收起精确设置" if open_it else "⚙️ 精确设置（不想打字就点这个）",
+                             key="toggle_precise"):
+            st.session_state["_open_precise"] = not open_it
+            if not open_it:
+                st.session_state["_focus_key"] = "precise"   # 手动展开也滚过去看一眼
+            st.rerun()
 
         bar = st.columns([4, 1], gap="small")
         with bar[0]:
@@ -5031,6 +5258,19 @@ def render_composer() -> None:
             # 控件本轮已实例化，改状态只能等下一次运行，所以先暂存再 rerun
             st.session_state["_pending_chat"] = said
             st.rerun()
+
+
+def render_precise_panel() -> None:
+    """「精确设置」摊开时的那张表单卡，摆在正文末尾、吸底输入卡的正上方。
+
+    放进页面流里而不是塞进输入卡：整展开一米六多高，留在卡里会把输入框顶出视口，
+    任务一要的「输入框绝对固定」当场破防，分页胶囊也会被压在下面。
+    """
+    if not st.session_state.get("_open_precise"):
+        return
+    with st.container(key="precise"):
+        _constraint_fields("f_")
+    _filled_field_fx()
 
 
 
@@ -5989,6 +6229,7 @@ def render_adjust_panel() -> None:
     提交时只暂存，由下次运行顶部统一写回。
     """
     current = {
+        "origin": st.session_state.get("f_origin", CONSTRAINT_DEFAULTS["origin"]),
         "country": st.session_state.get("f_country", CONSTRAINT_DEFAULTS["country"]),
         "province": st.session_state.get("f_province", CONSTRAINT_DEFAULTS["province"]),
         "city": st.session_state.get("f_city", CONSTRAINT_DEFAULTS["city"]),
@@ -6230,6 +6471,7 @@ def _play_intro(result: dict[str, Any]) -> dict[str, Any] | None:
 
 def main() -> None:
     setup_detail_log()
+    apply_pending_origin()
     apply_pending_constraints()
     apply_pending_preset()
     apply_pending_chat()
@@ -6264,15 +6506,13 @@ def main() -> None:
 
     # 结果页「调整条件」提交后，用同一套 payload 流程重算
     rerun_request = st.session_state.pop("_rerun_request", None)
-    # 卡片「⚡ 一键生成这个行程」和底部「开始规划」都只写标记，这里统一开跑一次
-    start_run = (
-        st.session_state.pop("_run_now", False)
-        or st.session_state.pop("_run_preset", False)
-        or rerun_request is not None
-    )
-    if start_run:
+    # 卡片「⚡ 一键生成这个行程」和底部「开始规划」都只写标记，这里统一开跑一次。
+    # 三个标记先各自 pop 再判 or：短路写法会把后面那个留到下一轮，凭空多跑一次规划。
+    run_now = st.session_state.pop("_run_now", False)
+    run_preset = st.session_state.pop("_run_preset", False)
+    if run_now or run_preset or rerun_request is not None:
         st.session_state.pop("result", None)
-        # 开跑了就别让详情弹窗压在进度上
+        # 开跑了就别让详情弹窗压在进度上，也别让上一趟的片头残留
         st.session_state["_open_detail"] = ""
         if _start_plan(str(rerun_request) if rerun_request is not None else payload["request"], payload):
             st.rerun()
@@ -6300,6 +6540,8 @@ def main() -> None:
     # 输入卡只属于首页：结果详情页 / 卡片详情弹窗都不渲染它（不是 display:none）。
     detail_open = bool(str(st.session_state.get("_open_detail") or ""))
     if not result and not detail_open:
+        # 正文里表单卡排在输入卡之前：摊开时它就在输入卡正上方
+        render_precise_panel()
         render_composer()
         # 输入卡高度会随聊天记录变化，主区底部留白跟着它走
         _embed_layout_sync()

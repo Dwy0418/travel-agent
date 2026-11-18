@@ -87,6 +87,16 @@ DEEPSEEK_API_KEY = "sk-你的Key"
 AMAP_KEY = "你的高德Web服务Key"
 ```
 
+想开「开始规划」后的 3D 电影级片头，再补两把高德「Web端(JS API)」凭证（控制台里另建一条服务类型）：
+
+```toml
+AMAP_JS_KEY = "你的高德Web端JS Key"
+AMAP_JS_SECURITY = "对应的安全密钥jscode"
+```
+
+片头目前跑的是打包内置的 3D 场景，这两把要等真实高德瓦片接进来才用得上；缺了不影响规划与出行程，页面也不会黑屏。
+JS Key 会随页面下发到浏览器，请在高德控制台给该 Key 绑域名白名单（线上要含 `*.streamlit.app`）。
+
 保存即自动重启，约 2 分钟拿到 `https://<子域名>.streamlit.app`。
 密钥读取顺序是 **环境变量（本地 `.env`）→ Streamlit Secrets（线上）→ 默认值**，
 同一份代码本地与云端都不用改。完整图文步骤与报错对照见 **[部署指南.md](部署指南.md)**。

@@ -710,6 +710,8 @@ class TravelAgent:
         same_streak = 0
 
         for round_no in range(1, config.MAX_ITERATIONS + 1):
+            if self._cancelled():
+                raise AgentError("已取消规划")
             iterations = round_no
             self.round_no = round_no
             self._check_cancelled()
