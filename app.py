@@ -5182,7 +5182,6 @@ class _PlanJob:
         self.live = ""
         self.result: dict[str, Any] | None = None
         self.outline: dict[str, Any] | None = None
-        self.outline_at: float | None = None
         self.error: BaseException | None = None
         self.finished = threading.Event()
         self.cancelled = threading.Event()
@@ -5211,7 +5210,6 @@ class _PlanJob:
                 def _outline_ready(outline: dict[str, Any] | None) -> None:
                     if outline and (outline.get("itinerary") or {}).get("days"):
                         # 只写普通属性：所有 st.* 调用都留在主脚本线程
-                        self.outline_at = round(self.elapsed(), 1)
                         self.outline = outline
 
                 self.result = engine.run_two_stage(self.request, self.payload, _outline_ready)
@@ -5277,7 +5275,6 @@ def _go_home() -> None:
         "_plan_error",
         "_pdf_cache",
         "_outline_diff_note",
-        "_stage_timings",
     ):
         st.session_state.pop(key, None)
     st.rerun()
@@ -5289,7 +5286,7 @@ def _start_plan(request: str, payload: dict[str, Any]) -> bool:
         st.warning("还缺一个具体城市就能开跑，点下方「精确设置」选一个，或直接告诉我去哪。")
         return False
     st.session_state["_last_payload"] = dict(payload)
-    for key in ("_intro_played", "_intro_pending", "_intro_result", "_outline_diff_note", "_stage_timings"):
+    for key in ("_intro_played", "_intro_pending", "_intro_result", "_outline_diff_note"):
         st.session_state.pop(key, None)
     job = _PlanJob(request, payload)
     job.start()
@@ -5321,18 +5318,14 @@ def _outline_diff_note(outline: dict[str, Any], result: dict[str, Any]) -> str:
     return f"校验后行程有 {changed} 处调整（点位或时间），下方为最终版本。"
 
 
-def _finish_plan_job(job: _PlanJob, source: str = "?") -> None:
+def _finish_plan_job(job: _PlanJob) -> None:
     """后台任务收尾：成功落到 result，失败转成首页上的一句错误。
 
-    source 只用于排障；被取消的旧任务即使晚到，也不能覆盖当前会话的新任务。
+    被取消的旧任务即使晚到，也不能覆盖当前会话的新任务。
     """
     if st.session_state.get("_agent_job") is not job:
         return
     st.session_state.pop("_agent_job", None)
-    st.session_state["_stage_timings"] = {
-        "outline": job.outline_at,
-        "total": round(job.elapsed(), 1),
-    }
     if job.error is not None:
         # 版本错位兜底：app.py 先上线、agent.py 还没跟上时，agent 模块里
         # 可能没有 AgentCancelled。这里用 getattr 退回「非取消」，让界面落到
@@ -5387,7 +5380,7 @@ def _render_plan_job(job: _PlanJob) -> None:
             if st.button("取消规划", key=cancel_key):
                 job.cancelled.set()
                 _snapshot_form()
-                for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note", "_stage_timings"):
+                for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note"):
                     st.session_state.pop(key, None)
                 st.session_state.pop("_agent_job", None)
                 box.empty()
@@ -5395,7 +5388,7 @@ def _render_plan_job(job: _PlanJob) -> None:
         if job.finished.is_set():
             # 先收尾（成功落 result / 失败落 _plan_error），再整页切走：
             # 成功进片头，失败落到首页的错误条，都不在 fragment 里干等
-            _finish_plan_job(job, source="plan_tick")
+            _finish_plan_job(job)
             box.empty()
             st.rerun(scope="app")
         if job.outline is not None:
@@ -5482,7 +5475,7 @@ def _render_outline_job(job: "_PlanJob") -> None:
     days = (outline.get("itinerary") or {}).get("days") or []
     c = outline.get("constraints") or {}
     if job.finished.is_set() and job.error is None:
-        _finish_plan_job(job, source="outline_top")
+        _finish_plan_job(job)
         st.rerun()
 
     nav = st.columns([1, 1, 2.4])
@@ -5497,7 +5490,7 @@ def _render_outline_job(job: "_PlanJob") -> None:
     def _status() -> None:
         st.markdown(_outline_banner_html(job), unsafe_allow_html=True)
         if job.finished.is_set() and job.error is None:
-            _finish_plan_job(job, source="outline_status")
+            _finish_plan_job(job)
             st.rerun(scope="app")
         if job.finished.is_set() and job.error is not None:
             if st.button("重新规划", key="outline_retry"):
@@ -5562,7 +5555,7 @@ def _render_plan_job_legacy(job: _PlanJob) -> None:
         if st.button("取消规划", key="ci_plan_cancel"):
             job.cancelled.set()
             _snapshot_form()
-            for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note", "_stage_timings"):
+            for key in ("result", "_intro_pending", "_intro_result", "_intro_played", "_open_detail", "_plan_error", "_pdf_cache", "_outline_diff_note"):
                 st.session_state.pop(key, None)
             st.session_state.pop("_agent_job", None)
             st.rerun()
