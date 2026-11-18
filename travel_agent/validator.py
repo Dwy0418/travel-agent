@@ -18,6 +18,10 @@ CLOSED_WORDS = ("闭馆", "休息", "不开放", "暂停开放", "停止营业")
 WEEKDAY_INDEX = {"周一": 0, "周二": 1, "周三": 2, "周四": 3, "周五": 4, "周六": 5, "周日": 6, "周天": 6}
 ELDER_WORDS = ("老人", "长辈", "父母", "爷爷", "奶奶", "外公", "外婆", "腿脚")
 CHILD_WORDS = ("小孩", "儿童", "孩子", "亲子", "宝宝", "婴儿")
+#: 山类点位：「不想爬山」时一律不排
+MOUNTAIN_WORDS = ("山", "岭", "峰", "登山", "索道", "长城")
+#: 孕妇 / 无障碍硬需求时要避开的点位特征
+ACCESS_BLOCK_WORDS = ("登山", "爬山", "长城", "陡坡", "长台阶", "索道", "山", "岭", "峰")
 
 
 def default_router(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -347,14 +351,50 @@ def validate(
         for item in attractions:
             seen.setdefault(item.get("name") or "", []).append(label)
 
-    # 室内偏好校验：偏好「室内为主」时，室内景点至少占一半
-    if constraints.get("indoor"):
-        all_attrs = [
+    # 全维度约束校验：避雷 / 硬需求 / 美食，都是「说了就必须在点位上看得到」
+    all_attrs = [
+        item for day in days for item in (day.get("items") or []) if item.get("type") == "attraction"
+    ]
+    if constraints.get("no_mountain"):
+        for item in all_attrs:
+            text = f"{item.get('name') or ''} {item.get('note') or ''}"
+            if any(word in text for word in MOUNTAIN_WORDS):
+                issues.append(
+                    f"用户明确「不想爬山」，但安排了「{item.get('name')}」（山 / 岭 / 峰 / 长城 / 索道类），"
+                    "请换成平地、街区或室内景点"
+                )
+    if constraints.get("pet"):
+        for item in all_attrs:
+            if is_indoor(item):
+                issues.append(
+                    f"用户要带宠物，「{item.get('name')}」属于室内场馆，通常不允许宠物入内；"
+                    "请全部换成公园、广场、街区等户外点位（室内馆不能靠备注绕过）"
+                )
+    if constraints.get("accessibility"):
+        for item in all_attrs:
+            text = f"{item.get('name') or ''} {item.get('note') or ''}"
+            if any(word in text for word in ACCESS_BLOCK_WORDS):
+                issues.append(
+                    f"同行有孕妇 / 需要无障碍，「{item.get('name')}」涉及登山、长城、陡坡或长台阶，"
+                    "请换成平缓、有无障碍通道的点位"
+                )
+    if constraints.get("foods"):
+        meals = [
             item
             for day in days
             for item in (day.get("items") or [])
-            if item.get("type") == "attraction"
+            if item.get("type") in ("food", "meal")
         ]
+        meal_text = " ".join(f"{item.get('name') or ''} {item.get('note') or ''}" for item in meals)
+        missing = [word for word in constraints["foods"] if word not in meal_text]
+        if missing:
+            issues.append(
+                f"用户写了想吃「{'、'.join(missing)}」，但行程的餐饮安排里没有出现；"
+                "请安排至少一顿相关餐厅（type 填 food 或 meal，name 或 note 写明菜名）"
+            )
+
+    # 室内偏好校验：偏好「室内为主」时，室内景点至少占一半
+    if constraints.get("indoor"):
         indoor_count = sum(1 for item in all_attrs if is_indoor(item))
         if len(all_attrs) >= 2 and indoor_count * 2 < len(all_attrs):
             issues.append(

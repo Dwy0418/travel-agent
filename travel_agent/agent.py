@@ -10,36 +10,10 @@ import time
 from datetime import date, timedelta
 from typing import Any, Callable
 
-from . import config, llm, schemas, tools, validator, zh_labels
+from . import config, llm, natural, schemas, tools, validator, zh_labels
 
 #: 技术明细（原始参数、坐标、耗时）只进后台日志文件，不上屏。
 _detail_logger = logging.getLogger("travel_agent.detail")
-
-# 从「大致想法」里兜底识别的口语词：界面已经派生了 companions/preferences，
-# 这里再扫一遍原始 request，防止前端规则漏词或别的调用方直接传自由文本。
-_ELDER_WORDS = ("老人", "父母", "爸妈", "爸爸", "妈妈", "爷爷", "奶奶", "外公", "外婆", "长辈", "二老")
-_CHILD_WORDS = ("小孩", "孩子", "娃", "宝宝", "亲子", "儿童", "儿子", "女儿")
-_INDOOR_WORDS = ("室内", "博物馆", "美术馆", "展览", "展馆", "科技馆")
-_RELAX_WORDS = ("不想太累", "太累", "别太累", "轻松", "少走路", "慢一点", "节奏慢", "休闲", "别太赶", "不赶")
-_FOOD_WORDS = ("美食", "小吃", "好吃", "餐厅", "夜宵", "烧烤", "螺蛳粉")
-
-
-def _scan_request(text: str) -> tuple[list[str], list[str]]:
-    """从自由文本粗提 (同行人, 偏好)；只返回识别到的项，不猜。"""
-    raw = str(text or "")
-    companions: list[str] = []
-    prefs: list[str] = []
-    if any(word in raw for word in _ELDER_WORDS):
-        companions.append("带老人")
-    if any(word in raw for word in _CHILD_WORDS):
-        companions.append("带小孩")
-    if any(word in raw for word in _INDOOR_WORDS):
-        prefs.append("室内为主")
-    if any(word in raw for word in _RELAX_WORDS):
-        prefs.append("少走路/休闲游")
-    if any(word in raw for word in _FOOD_WORDS):
-        prefs.append("美食打卡")
-    return companions, prefs
 
 
 SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规则：
@@ -55,7 +29,13 @@ SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规�
 10. 【大致想法】是用户自然语言诉求，必须从中提取同行人（带老人 / 带小孩）与偏好（室内、少走路、美食）并落实到行程：
     识别到老人、小孩或「不想太累 / 轻松」时，每天最多 2 个景点、单日游览合计不超过 4 小时，
     并在 12:00-14:00 安排至少 45 分钟休息（type 填 rest）；偏好室内时优先博物馆 / 美术馆 / 展馆。
-    只把原话抄进行程、不改变节奏和点位，视为没有执行约束。"""
+    只把原话抄进行程、不改变节奏和点位，视为没有执行约束。
+11. 硬需求与避雷必须落到点位选择上，不能只在摘要里提一句：
+    「不想爬山 / 不登山」时不得安排山、岭、峰、长城、索道类景点；
+    带宠物时不得安排博物馆 / 展馆 / 商场等室内场馆（一律按不允许宠物入内处理），只排户外点位；
+    孕妇 / 坐轮椅时避开登山、长城、陡坡与长台阶路线；
+    写了「想吃 X」至少安排一顿 X 类餐厅（type 填 food / meal，名称或备注写明菜名）；
+    写了「想看园林 / 古镇 / 海边」等风格时，优先能直接对上这类景观的景点。"""
 
 OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如下（字段名不得改动、禁止多余文字）：
 {
@@ -110,17 +90,54 @@ class AgentCancelled(AgentError):
     """用户在规划途中取消：run() 在轮次安全点提前返回，结果直接丢弃。"""
 
 
+HARD_HINTS = {
+    "宠物友好": "只能排公园 / 广场 / 街区等户外点位，博物馆 / 故宫 / 展馆 / 商场一律不能排",
+    "无障碍": "避开登山、长城、陡坡与长台阶，选平缓且有无障碍通道的点位",
+    "孕妇友好": "避开登山、长城、陡坡与长台阶，控制步行距离",
+}
+
+
+def _hard_line(hard: list[str]) -> str:
+    parts = [f"{tag}（{HARD_HINTS[tag]}）" if tag in HARD_HINTS else tag for tag in hard]
+    return f"- 硬需求：{'、'.join(parts)}（必须满足，选点前先排除不满足的场所）\n"
+
+
+def _merge_tags(existing: Any, extra: list[str]) -> list[str]:
+    """把自然语言抽到的标签并进调用方给的列表，去重且保持顺序。"""
+    if isinstance(existing, str):
+        existing = [part for part in re.split(r"[、,，]", existing)]
+    out = [str(item).strip() for item in (existing or []) if str(item).strip()]
+    for tag in extra:
+        if tag not in out:
+            out.append(tag)
+    return out
+
+
 def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
-    """把界面/命令行输入整理成结构化用户约束（含默认值）。"""
+    """把界面/命令行输入整理成结构化用户约束（含默认值）。
+
+    「大致想法」只走 travel_agent.natural 这一套抽取：人数、天数、预算、
+    同行人、偏好、避雷、硬需求、美食、风格都在这里统一落成约束字段，
+    前端展示与后端规划用的是同一份结果，不存在两套正则各说各话。
+    """
     raw = raw or {}
     city = str(raw.get("city") or "").strip()
     if not city:
         raise AgentError("请先填写目的地城市")
-    days = int(raw.get("days") or 1)
+    request = str(raw.get("request") or "").strip()
+    nat = natural.extract_all(request)
+
+    # 冲突规则：原话写明的天数 / 人数 / 预算优先于下拉框，与前端填写口径一致。
+    days = int(nat["days"] or raw.get("days") or 1)
     if not 1 <= days <= 10:
         raise AgentError("行程天数需在 1-10 天之间")
-    people = max(1, int(raw.get("people") or 1))
+    people = max(1, int(nat["people"] or raw.get("people") or 1))
     budget = float(raw.get("budget") or 0) or 3000.0
+    if nat["per_person"]:
+        budget = float(nat["per_person"]) * people
+    elif nat["budget"]:
+        budget = float(nat["budget"])
+
     start = raw.get("start_date")
     if isinstance(start, str):
         try:
@@ -129,30 +146,26 @@ def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
             start = date.today() + timedelta(days=1)
     if not isinstance(start, date):
         start = date.today() + timedelta(days=1)
+
     companions = raw.get("companions") or []
     if isinstance(companions, str):
         companions = [c.strip() for c in companions.replace("，", ",").split(",") if c.strip()]
-    companions = [str(c).strip() for c in companions if str(c).strip()]
-    request = str(raw.get("request") or "").strip()
-
-    # 前端已从「大致想法」派生过一轮；这里再扫原始句子，兼容直接调 Agent 的调用方。
-    auto_companions, auto_prefs = _scan_request(request)
-    for tag in auto_companions:
-        if tag not in companions:
-            companions.append(tag)
+    companions = _merge_tags(companions, nat["companions"])
 
     preferences = str(raw.get("preferences") or "").strip()
-    for tag in auto_prefs:
+    for tag in nat["preferences"]:
         if tag not in preferences:
             preferences = f"{preferences}、{tag}" if preferences else tag
 
-    companion_text = " ".join(companions)
-    elder = any(word in companion_text for word in _ELDER_WORDS)
-    child = any(word in companion_text for word in _CHILD_WORDS)
-    relaxed = "少走路" in preferences or "休闲" in preferences or any(
-        word in request for word in _RELAX_WORDS
-    )
-    indoor = "室内" in preferences or any(word in request for word in _INDOOR_WORDS)
+    avoid = _merge_tags(raw.get("avoid"), nat["avoid"])
+    hard = _merge_tags(raw.get("hard"), nat["hard"])
+    foods = _merge_tags(raw.get("foods"), nat["foods"])
+    styles = _merge_tags(raw.get("styles"), nat["styles"])
+
+    elder = "带老人" in companions
+    child = "带小孩" in companions
+    relaxed = "少走路/休闲游" in preferences
+    indoor = "室内为主" in preferences
     slow_pace = elder or child or relaxed
 
     return {
@@ -178,6 +191,16 @@ def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
         "max_attractions": 2 if slow_pace else config.MAX_ATTRACTIONS_PER_DAY,
         "dwell_hours": 4 if slow_pace else 5,
         "rest_required": slow_pace,
+        # 全维度抽取的其余维度：避雷 / 硬需求 / 美食 / 风格，validator 会硬校验其中可判定的部分。
+        "avoid": avoid,
+        "hard": hard,
+        "foods": foods,
+        "styles": styles,
+        "per_person": float(nat["per_person"]) if nat["per_person"] else None,
+        "no_mountain": "不爬山" in avoid,
+        "pet": "宠物友好" in hard,
+        "accessibility": "无障碍" in hard or "孕妇友好" in hard,
+        "pregnant": "孕妇友好" in hard,
     }
 
 
@@ -197,6 +220,14 @@ def constraint_lines(c: dict[str, Any]) -> str:
     ]
     if c.get("origin"):
         lines.insert(0, f"- 出发地：{c['origin']}")
+    if c.get("hard"):
+        lines.append(f"- 硬需求（必须满足）：{'、'.join(c['hard'])}")
+    if c.get("avoid"):
+        lines.append(f"- 避雷（必须规避）：{'、'.join(c['avoid'])}")
+    if c.get("foods"):
+        lines.append(f"- 想吃的当地美食：{'、'.join(c['foods'])}（至少安排一顿相关餐厅）")
+    if c.get("styles"):
+        lines.append(f"- 想看的景观类型：{'、'.join(c['styles'])}")
     if c.get("slow_pace"):
         lines.append(
             f"- 体力与节奏（必须执行）：每天最多 {c['max_attractions']} 个景点，"
@@ -577,6 +608,22 @@ class TravelAgent:
                 else ""
             )
             + ("- 室内要求：博物馆 / 美术馆 / 展馆至少占一半\n" if c.get("indoor") else "")
+            + (_hard_line(c.get("hard") or []) if c.get("hard") else "")
+            + (
+                f"- 避雷：{'、'.join(c.get('avoid') or [])}（出现对应类型的点位即视为失败，必须换点）\n"
+                if c.get("avoid")
+                else ""
+            )
+            + (
+                f"- 想吃：{'、'.join(c.get('foods') or [])}（至少一顿相关餐厅，name 或 note 写明菜名）\n"
+                if c.get("foods")
+                else ""
+            )
+            + (
+                f"- 想看：{'、'.join(c.get('styles') or [])}（点位要能直接对上这类景观）\n"
+                if c.get("styles")
+                else ""
+            )
             + "\n【结构化约束】\n"
             f"{constraint_lines(c)}{coords}\n\n"
             f"{prefetch_part}"
@@ -690,6 +737,10 @@ class TravelAgent:
         if c.get("indoor"):
             seen_kw = {kw for kw, _ in keywords}
             keywords += [(kw, n) for kw, n in (("美术馆", 4), ("展览馆", 4)) if kw not in seen_kw]
+        # 用户点名的景观类型直接进候选，模型才有真实可用的点位可挑
+        for style in (c.get("styles") or [])[:2]:
+            if all(kw != style for kw, _ in keywords):
+                keywords.append((style, 4))
         tasks += [
             ("search_poi", {"city": c["city"], "keyword": kw, "count": n})
             for kw, n in keywords
@@ -783,7 +834,11 @@ class TravelAgent:
                 if c.get("slow_pace")
                 else ""
             )
-            + ("，室内优先" if c.get("indoor") else ""),
+            + ("，室内优先" if c.get("indoor") else "")
+            + (f"，硬需求 {('、'.join(c['hard']))}" if c.get("hard") else "")
+            + (f"，避雷 {('、'.join(c['avoid']))}" if c.get("avoid") else "")
+            + (f"，想吃 {('、'.join(c['foods']))}" if c.get("foods") else "")
+            + (f"，想看 {('、'.join(c['styles']))}" if c.get("styles") else ""),
             "constraint",
         )
         self._seed_city(c)

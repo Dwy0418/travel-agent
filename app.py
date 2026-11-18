@@ -26,7 +26,7 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from travel_agent import agent, config, pdf_export, regions, tools, zh_labels
+from travel_agent import agent, config, natural, pdf_export, regions, tools, zh_labels
 
 from components.map_intro import map_intro
 
@@ -4672,6 +4672,15 @@ def _parse_origin(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+def _extract_people(text: str) -> tuple[int | None, str]:
+    """人数识别统一走 travel_agent.natural，避免前端一套、后端一套。"""
+    return natural.extract_people(text)
+
+
+def _vague_people(text: str) -> bool:
+    """文案提到了人却没给总数（一家人 / 几个朋友），只提示不猜。"""
+    return natural.vague_people(text)
+
 def parse_plan_text(text: str) -> dict[str, Any]:
     """规则解析：只返回这句话里确实说到的字段，没说的键不出现（增量覆盖靠调用方）。"""
     raw = str(text or "").strip()
@@ -4696,59 +4705,52 @@ def parse_plan_text(text: str) -> dict[str, Any]:
             if prov:
                 found["country"], found["province"] = prov
 
-    m = re.search(rf"{_NUM}\s*(?:天|晚|日游)", raw)
-    if m:
-        days = _cn_int(m.group(1))
-        if days:
-            found["days"] = max(1, days)
-    elif "一日游" in raw:
-        found["days"] = 1
-
-    m = re.search(rf"人均\s*{_NUM}\s*(万|千|w|k)?", raw)
-    if m:
-        found["per_person"] = _money(m.group(1), m.group(2) or "")
-    m = re.search(rf"(?:预算|花费|费用|每人|人均)?\s*(?:不超过|控制在|大概|约)?\s*{_NUM}\s*(万|千|w|k)?\s*(?:元|块|块钱)", raw)
-    if m and found.get("per_person") is None:
-        found["budget"] = _money(m.group(1), m.group(2) or "")
-    m = re.search(rf"预算\s*{_NUM}\s*(万|千|w|k)?", raw)
-    if m and found.get("per_person") is None:
-        found["budget"] = _money(m.group(1), m.group(2) or "")
-
-    m = re.search(rf"{_NUM}\s*(?:个人|人(?!均)|位|个(?:人|朋友|同学|伙伴))", raw)
-    if m:
-        people = _cn_int(m.group(1))
-        if people:
-            found["people"] = max(1, people)
-    if "一家三口" in raw:
-        found["people"] = 3
-    if "一家四口" in raw:
-        found["people"] = 4
+    nat = natural.extract_all(raw)
+    if nat["days"]:
+        found["days"] = nat["days"]
+    if nat["per_person"]:
+        found["per_person"] = nat["per_person"]
+    if nat["budget"]:
+        found["budget"] = nat["budget"]
+    if nat["people"]:
+        found["people"] = nat["people"]
+    if nat["companions"]:
+        found["companions"] = [
+            COMPANION_OPTIONS[COMPANION_LABELS.index(x)]
+            for x in nat["companions"]
+            if x in COMPANION_LABELS
+        ]
+    if nat["preferences"]:
+        found["prefs"] = [
+            PREFERENCE_OPTIONS[PREFERENCE_LABELS.index(x)]
+            for x in nat["preferences"]
+            if x in PREFERENCE_LABELS
+        ]
+    for key in ("avoid", "hard", "foods", "styles"):
+        if nat[key]:
+            found[key] = nat[key]
 
     start, end = _parse_dates(raw, date.today())
     if start:
         found["start"] = start
     if end:
         found["end"] = end
-
-    picked = [opt for opt, keys in _COMPANION_KEYS if any(word in raw for word in keys)]
-    if picked:
-        found["companions"] = picked
-    picked = [opt for opt, keys in _PREFERENCE_KEYS if any(word in raw for word in keys)]
-    if picked:
-        found["prefs"] = picked
     return found
 
 
-def _apply_idea_autofill() -> None:
-    """开跑前用「大致想法」补空：写了地标/城市就认，写「从X出发」就改出发地。
+def _apply_idea_autofill() -> list[str]:
+    """开跑前把「大致想法」里的结构化条件同步进表单；自然语言优先于下拉框。
 
-    只在点「开始规划」那一轮跑，用户正常编辑文字时表单不动；
-    用户已经选好目的地时不覆盖，表单始终是主口径。
+    统一规则：文案写清了什么，就以文案为准（人数、天数/日期、预算）；
+    控件在实例化前被改写，下一轮界面显示的就是新值，同时 toast 列出改动。
+    文案没写或含糊的（「一家人」「几个朋友」）保持当前值，不猜。
     """
     idea = str(st.session_state.get("f_idea") or "").strip()
     if not idea:
-        return
+        return []
     found = parse_plan_text(idea)
+    applied: list[str] = []
+
     city_now = st.session_state.get("f_city")
     if city_now in (None, "", UNLIMITED_CITY):
         if found.get("city"):
@@ -4764,12 +4766,60 @@ def _apply_idea_autofill() -> None:
         st.session_state["f_origin"] = origin
         st.session_state["f_origin_province"] = _origin_province_of(origin)
 
+    before_people = int(st.session_state.get("f_people") or CONSTRAINT_DEFAULTS["people"])
+    final_people = before_people
+    if found.get("people"):
+        final_people = int(found["people"])
+        st.session_state["f_people"] = final_people
+        if final_people != before_people:
+            applied.append(f"{final_people} 人")
+
+    # 天数 / 日期：文案写明就覆盖日期框，界面随后显示新日期
+    min_date, max_date = _date_bounds()
+    old_start = st.session_state.get("f_start")
+    old_end = st.session_state.get("f_end")
+    old_days = _span_days(old_start, old_end) if isinstance(old_start, date) and isinstance(old_end, date) else 0
+    start = old_start if isinstance(old_start, date) else date.today() + timedelta(days=1)
+    if found.get("start"):
+        start = found["start"]
+    start = max(min_date, min(start, max_date))
+    end = old_end if isinstance(old_end, date) else start
+    if found.get("end"):
+        end = found["end"]
+    elif found.get("days"):
+        end = start + timedelta(days=int(found["days"]) - 1)
+    end = max(start, min(end, max_date))
+    if start != old_start:
+        st.session_state["f_start"] = start
+        applied.append(f"出发日期 {start:%m月%d日}")
+    if end != old_end:
+        st.session_state["f_end"] = end
+        applied.append(f"返程 {end:%m月%d日}")
+    if found.get("days") and found["days"] != old_days:
+        applied.append(f"{int(found['days'])} 天")
+
+    # 预算：人均 × 最终人数；只写总预算时直接用总额
+    old_budget = int(float(st.session_state.get("f_budget") or CONSTRAINT_DEFAULTS["budget"]))
+    new_budget = None
+    if found.get("per_person"):
+        per = float(found["per_person"])
+        new_budget = int(round(per * final_people))
+        if new_budget != old_budget:
+            applied.append(f"总预算 ¥{new_budget:,}（人均 ¥{int(per):,}）")
+    elif found.get("budget"):
+        new_budget = int(round(float(found["budget"])))
+        if new_budget != old_budget:
+            applied.append(f"总预算 ¥{new_budget:,}")
+    if new_budget is not None:
+        st.session_state["f_budget"] = new_budget
+    return applied
+
 
 def _idea_constraints(text: str) -> dict[str, Any]:
-    """从「大致想法」里抽同行人与偏好：规则解析兜底，后端模型还会再核一遍。
+    """从「大致想法」里抽同行人、偏好与明确人数：规则解析兜底，后端模型还会再核一遍。
 
-    人数不从这里派生：界面上的「出行人数」是唯一口径，避免出现
-    「界面 2 人、预算按 3 人算」的两套数字。
+    人数最终落在 f_people（人数框）上，再由 payload 统一带走；
+    这里返回的 people 只供「调整条件」面板提交时同步，不另算一套。
     """
     found = parse_plan_text(text)
     companions = plain_companions(list(found.get("companions") or []))
@@ -4779,6 +4829,14 @@ def _idea_constraints(text: str) -> dict[str, Any]:
         "companions": companions,
         "preferences": "、".join(labels),
         "preferences_list": prefs,
+        "people": found.get("people"),
+        "days": found.get("days"),
+        "budget": found.get("budget"),
+        "per_person": found.get("per_person"),
+        "avoid": found.get("avoid") or [],
+        "hard": found.get("hard") or [],
+        "foods": found.get("foods") or [],
+        "styles": found.get("styles") or [],
         "request": str(text or "").strip(),
     }
 
@@ -4832,6 +4890,11 @@ def _payload_from_state() -> dict[str, Any]:
         "companions": derived["companions"],
         "preferences": derived["preferences"],
         "preferences_list": derived["preferences_list"],
+        "avoid": derived["avoid"],
+        "hard": derived["hard"],
+        "foods": derived["foods"],
+        "styles": derived["styles"],
+        "per_person": derived["per_person"],
         "request": derived["request"],
     }
 
@@ -4845,7 +4908,7 @@ def _idea_input(key: str) -> str:
     st.markdown("<div class='sec-title'>📝 大致想法</div>", unsafe_allow_html=True)
     st.caption("(如带老人或者想要室内景点多一点请说明)")
     seed_state(key, str(st.session_state.get("f_idea") or CONSTRAINT_DEFAULTS["idea"]))
-    return str(
+    value = str(
         st.text_area(
             "大致想法",
             key=key,
@@ -4855,6 +4918,41 @@ def _idea_input(key: str) -> str:
         )
         or ""
     )
+    found = parse_plan_text(value)
+    prefix = key[:-4]
+    box_people = int(
+        st.session_state.get(f"{prefix}people", st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"]))
+        or CONSTRAINT_DEFAULTS["people"]
+    )
+    # 摘要按「将要生效」的人数算，不能出现文案说 3 人、总额却按 2 人算
+    people_now = int(found["people"]) if found.get("people") else box_people
+    parts: list[str] = []
+    if found.get("people"):
+        parts.append(f"{int(found['people'])} 人")
+    if found.get("days"):
+        parts.append(f"{int(found['days'])} 天")
+    if found.get("per_person"):
+        total = float(found["per_person"]) * people_now
+        parts.append(f"人均 ¥{int(found['per_person']):,}（总额 ¥{int(total):,}）")
+    elif found.get("budget"):
+        parts.append(f"预算 ¥{int(found['budget']):,}")
+    comps = plain_companions(list(found.get("companions") or []))
+    if comps:
+        parts.append("、".join(comps))
+    pref_opts = [p for p in (found.get("prefs") or []) if p in PREFERENCE_OPTIONS]
+    if pref_opts:
+        parts.append("、".join(PREFERENCE_LABELS[PREFERENCE_OPTIONS.index(p)] for p in pref_opts))
+    if found.get("hard"):
+        parts.append("硬需求：" + "、".join(found["hard"]))
+    if found.get("avoid"):
+        parts.append("避雷：" + "、".join(found["avoid"]))
+    if parts:
+        st.caption("🧭 已识别：" + " · ".join(parts))
+    if found.get("people") and int(found["people"]) != box_people:
+        st.caption(f"👥 将把出行人数从 {box_people} 改为 {int(found['people'])} 人（开跑时同步到人数框）")
+    if not found.get("people") and _vague_people(value):
+        st.caption(f"👥 没听出具体人数，将按当前 {people_now} 人；可在精确设置里确认")
+    return value
 
 
 def render_composer() -> None:
@@ -4891,6 +4989,11 @@ AGENT_PAYLOAD_KEYS = (
     "start_date",
     "companions",
     "preferences",
+    "avoid",
+    "hard",
+    "foods",
+    "styles",
+    "per_person",
     "request",
 )
 
@@ -5849,7 +5952,19 @@ def render_adjust_panel() -> None:
         if full_width_button("用新条件重新规划", kind="primary", key="q_rerun"):
             # 只暂存，不直接改 f_*：这些控件本轮已实例化，直接改会抛异常。
             new_payload["idea"] = idea
-            new_payload.update(_idea_constraints(idea))
+            derived = _idea_constraints(idea)
+            new_payload.update(derived)
+            if derived.get("people"):
+                # 文案写了明确人数就以它为准；payload 写回 f_people 后人数框会跟着变
+                new_payload["people"] = int(derived["people"])
+            if derived.get("days"):
+                start_day = date.fromisoformat(new_payload["start_date"])
+                new_payload["days"] = int(derived["days"])
+                new_payload["end"] = (start_day + timedelta(days=int(derived["days"]) - 1)).isoformat()
+            if derived.get("per_person"):
+                new_payload["budget"] = float(derived["per_person"]) * int(new_payload["people"])
+            elif derived.get("budget"):
+                new_payload["budget"] = float(derived["budget"])
             st.session_state["_pending_constraints"] = new_payload
             st.session_state["_rerun_request"] = idea
             st.rerun()
@@ -6108,7 +6223,14 @@ def main() -> None:
     # 卡片「⚡ 一键生成这个行程」和底部「开始规划」都只写标记，这里统一开跑一次
     start_run = run_now or run_preset or rerun_request is not None
     if start_run and not run_preset:
-        _apply_idea_autofill()
+        applied = _apply_idea_autofill()
+        if applied:
+            st.toast("已按大致想法同步：" + "、".join(applied), icon="🧭")
+        elif _vague_people(str(st.session_state.get("f_idea") or "")):
+            st.toast(
+                f"没听出具体人数，仍按 {int(st.session_state.get('f_people') or CONSTRAINT_DEFAULTS['people'])} 人规划",
+                icon="👥",
+            )
 
     # 用户亲手写的「大致想法」才算「你说过」；卡片自带的文案仍标成「这条线的设定」。
     if start_run and not run_preset:

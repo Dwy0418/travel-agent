@@ -1,4 +1,4 @@
-"""离线校验详情与卡片数据：问答式解析、点图片出详情、套用卡片直接出行程。
+﻿"""离线校验详情与卡片数据：问答式解析、点图片出详情、套用卡片直接出行程。
 
 用法：在仓库根目录跑 `python tools/chat_test.py`（AppTest 需要 cwd 是仓库根，
 否则 app.py 里的相对路径会指错地方）。
@@ -86,9 +86,109 @@ for text, want in cases:
 check(A.parse_plan_text("10月15号和老婆去扬州玩3天").get("companions") == ["👩 ❤️ 👨 情侣/夫妻"],
       "「和老婆」认成情侣/夫妻")
 check("🍲 美食打卡" in A.parse_plan_text("想吃火锅拍照").get("prefs", []), "「想吃」认成美食打卡")
+
+# 人数口语：明确说法都要能读出来
+people_cases = {
+    "一家三口去北京": 3,
+    "一家5口": 5,
+    "三口之家": 3,
+    "我们两个人": 2,
+    "夫妻俩": 2,
+    "老两口": 2,
+    "两个大人一个小孩": 3,
+    "2大2小": 4,
+    "带父母共 5 人": 5,
+    "一共4人": 4,
+    "独自一人": 1,
+    "我们仨": 3,
+    "夫妻带一个孩子": 3,
+    "一个人带两个孩子": 3,
+}
+for text, want_n in people_cases.items():
+    got_n = A.parse_plan_text(text).get("people")
+    check(got_n == want_n, f"人数识别「{text}」", f"期望{want_n} 实际{got_n}")
+for vague in ("一家人", "几个朋友", "带上家人", "一家老小"):
+    check(A.parse_plan_text(vague).get("people") is None,
+          f"含混说法不猜人数「{vague}」", str(A.parse_plan_text(vague)))
+    check(A._vague_people(vague), f"含混说法能提示确认「{vague}」")
 # 相对日期不能倒挂：说过的日子要顺延到明年
 late = A.parse_plan_text("1月5日去北京")["start"]
 check(late > date.today(), "过去的日期顺延到下一年", str(late))
+
+# ---------------------------------------------------------------------------
+# 1a. 全维度抽取：一句话里的天数 / 人均预算 / 人群 / 偏好 / 避雷 / 美食
+# ---------------------------------------------------------------------------
+full_text = "带爸妈去北京玩4天，人均3000，不想太累，想吃烤鸭"
+full = A.parse_plan_text(full_text)
+check(full.get("people") == 3 and full.get("days") == 4,
+      "同一句话里的人数与天数都抽出来", f"people={full.get('people')} days={full.get('days')}")
+check(full.get("per_person") == 3000 and "budget" not in full,
+      "「人均3000」只算人均，不混成总预算", str({k: full.get(k) for k in ('per_person', 'budget')}))
+check(full.get("companions") == ["👴 带老人"], "「带爸妈」认成带老人", str(full.get("companions")))
+check("🚶 少走路/休闲游" in (full.get("prefs") or []) and "🍲 美食打卡" in (full.get("prefs") or []),
+      "「不想太累」「想吃」进偏好", str(full.get("prefs")))
+check(full.get("avoid") == ["行程别太满"], "「不想太累」同时进避雷", str(full.get("avoid")))
+check(full.get("foods") == ["烤鸭"], "点名想吃的菜进 foods", str(full.get("foods")))
+check(not full.get("hard") and not full.get("styles"),
+      "没说硬需求 / 风格时不瞎补", str({k: full.get(k) for k in ('hard', 'styles')}))
+
+pet = A.parse_plan_text("带宠物去上海，不想爬山")
+check(pet.get("hard") == ["宠物友好"] and "🐶 携带宠物" in (pet.get("companions") or []),
+      "「带宠物」同时进硬需求与同行人", str(pet.get("hard")))
+check(pet.get("avoid") == ["不爬山"], "「不想爬山」进避雷", str(pet.get("avoid")))
+wheel = A.parse_plan_text("坐轮椅出行，想看园林")
+check(wheel.get("hard") == ["无障碍"] and wheel.get("styles") == ["园林"],
+      "轮椅进无障碍硬需求，园林进风格", str({k: wheel.get(k) for k in ('hard', 'styles')}))
+
+# 后端约束：自然语言优先于下拉框，且人数/预算/房间/节奏同一口径
+fc = A.agent.build_constraints(
+    {"city": "北京市", "days": 2, "people": 2, "budget": 3000, "start_date": "2026-12-01",
+     "request": full_text}
+)
+check(fc["days"] == 4 and fc["people"] == 3, "原话天数/人数覆盖下拉框",
+      f"days={fc['days']} people={fc['people']}")
+check(fc["budget"] == 9000.0 and fc["rooms"] == 2,
+      "人均 3000 × 3 人 = 总预算 9000，房间 ceil(3/2)=2",
+      f"budget={fc['budget']} rooms={fc['rooms']}")
+check(fc["max_attractions"] == 2 and fc["dwell_hours"] == 4 and fc["rest_required"],
+      "带老人 → 每天 2 个景点 / 游览 ≤4 小时 / 必须午休",
+      f"{fc['max_attractions']} 个 / {fc['dwell_hours']}h")
+check("烤鸭" in fc["foods"] and "行程别太满" in fc["avoid"] and "美食打卡" in fc["preferences"],
+      "美食与避雷进了结构化约束", str({k: fc.get(k) for k in ('foods', 'avoid')}))
+lines = A.agent.constraint_lines(fc)
+check("想吃的当地美食：烤鸭" in lines and "避雷（必须规避）" in lines,
+      "提示词里带着美食与避雷，不只是存在字段里")
+
+# 硬约束真的打回：山类景点 / 宠物进室内场馆
+_hard_it = {"days": [{"day": 1, "date": "2026-12-01", "items": [
+    {"type": "attraction", "name": "香山公园", "start": "09:00", "end": "11:00",
+     "lng": 116.19, "lat": 39.99, "indoor": False, "walk_km": 1},
+    {"type": "attraction", "name": "故宫博物院", "start": "11:30", "end": "13:00",
+     "lng": 116.397, "lat": 39.918, "indoor": True, "walk_km": 1},
+    {"type": "food", "name": "全聚德烤鸭", "start": "13:00", "end": "14:00"},
+]}]}
+_router = lambda name, args: {"success": False}  # noqa: E731 - 离线：天气/路线直接跳过
+hill_c = A.agent.build_constraints(
+    {"city": "北京市", "days": 1, "people": 2, "budget": 5000, "start_date": "2026-12-01",
+     "request": "去北京玩，不想爬山"}
+)
+hill_issues = A.agent.validator.validate(_hard_it, hill_c, router=_router)
+check(any("不想爬山" in issue and "香山公园" in issue for issue in hill_issues),
+      "「不想爬山」出现山类景点会被打回", str(hill_issues)[:120])
+pet_c = A.agent.build_constraints(
+    {"city": "北京市", "days": 1, "people": 2, "budget": 5000, "start_date": "2026-12-01",
+     "request": "带宠物去北京"}
+)
+pet_issues = A.agent.validator.validate(_hard_it, pet_c, router=_router)
+check(any("宠物" in issue and "故宫博物院" in issue for issue in pet_issues),
+      "「带宠物」进室内场馆会被打回", str(pet_issues)[:120])
+food_c = A.agent.build_constraints(
+    {"city": "北京市", "days": 1, "people": 2, "budget": 5000, "start_date": "2026-12-01",
+     "request": "去北京，想吃火锅"}
+)
+food_issues = A.agent.validator.validate(_hard_it, food_c, router=_router)
+check(any("火锅" in issue for issue in food_issues),
+      "点名想吃却没安排对应餐厅会被打回", str(food_issues)[:120])
 
 # ---------------------------------------------------------------------------
 # 2. 问答式输入卡：说一句话 -> 条件写回 + 管家复述（侧栏已下线，改吸底 composer）
@@ -246,7 +346,77 @@ check(last.get("request") == "带老人，想去室内博物馆，别太累"
       and last.get("companions") == ["带老人"],
       "开始规划把出发地 / 原话 / 派生约束一起打包",
       f"origin={last.get('origin')} request={last.get('request')!r}")
-check(last.get("people") == 2, "人数只认「出行人数」字段，不从文案猜", str(last.get("people")))
+check(last.get("people") == 2, "文案没写人数时，保持人数框当前值", str(last.get("people")))
+
+# ---------------------------------------------------------------------------
+# 2a2. 人数从大致想法提取：明确说法覆盖人数框，含混说法保持原值并提示
+# ---------------------------------------------------------------------------
+ap = new_at()
+ap.number_input(key="f_people").set_value(5).run()
+ap.text_area(key="f_idea").set_value("一家三口去北京，带老人，想去室内博物馆").run()
+check(any("🧭 已识别：3 人" in str(c.value) for c in ap.caption),
+      "输入时就提示识别到 3 人", "; ".join(str(c.value)[:40] for c in ap.caption)[:100])
+next(b for b in ap.button if str(b.label) == "开始规划").click()
+ap.run()
+assert not ap.exception, f"一家三口开跑抛异常：{ap.exception}"
+check(ap.session_state["f_people"] == 3, "一家三口把人数框从 5 改成 3",
+      str(ap.session_state.get("f_people")))
+check(any("已按大致想法同步：3 人" in str(t.value) for t in ap.toast),
+      "开跑时用 toast 明确告知人数已改", [str(t.value)[:40] for t in ap.toast])
+last3 = ap.session_state.get("_last_payload") or {}
+check(last3.get("people") == 3 and last3.get("city") == "北京市",
+      "payload 与界面人数一致", f"people={last3.get('people')} city={last3.get('city')}")
+settle(ap)
+
+aq = new_at()
+aq.number_input(key="f_people").set_value(5).run()
+aq.text_area(key="f_idea").set_value("我们两个人去北京").run()
+next(b for b in aq.button if str(b.label) == "开始规划").click()
+aq.run()
+assert not aq.exception, f"两个人开跑抛异常：{aq.exception}"
+check(aq.session_state["f_people"] == 2, "「我们两个人」把人数框从 5 改成 2",
+      str(aq.session_state.get("f_people")))
+last2 = aq.session_state.get("_last_payload") or {}
+check(last2.get("people") == 2, "payload 跟着变成 2 人", str(last2.get("people")))
+settle(aq)
+
+av = new_at()
+av.number_input(key="f_people").set_value(4).run()
+av.text_area(key="f_idea").set_value("一家人去北京").run()
+check(any("没听出具体人数" in str(c.value) for c in av.caption),
+      "含混说法在输入区提示确认人数", "; ".join(str(c.value)[:40] for c in av.caption)[:100])
+next(b for b in av.button if str(b.label) == "开始规划").click()
+av.run()
+assert not av.exception, f"含混说法开跑抛异常：{av.exception}"
+check(av.session_state["f_people"] == 4, "「一家人」不猜人数，保持 4 人",
+      str(av.session_state.get("f_people")))
+check(any("没听出具体人数" in str(t.value) for t in av.toast),
+      "含混说法开跑时提示按当前人数", [str(t.value)[:40] for t in av.toast])
+settle(av)
+
+# 2a3. 天数 / 人均预算也按自然语言覆盖：界面显示与 payload 必须同一个数
+aw = new_at()
+aw.text_area(key="f_idea").set_value(full_text).run()
+next(b for b in aw.button if str(b.label) == "开始规划").click()
+aw.run()
+assert not aw.exception, f"全维度开跑抛异常：{aw.exception}"
+check(aw.session_state["f_people"] == 3, "人数框同步成 3", str(aw.session_state.get("f_people")))
+check(A._span_days(aw.session_state["f_start"], aw.session_state["f_end"]) == 4,
+      "日期框同步成 4 天",
+      f"{aw.session_state.get('f_start')}~{aw.session_state.get('f_end')}")
+check(int(aw.session_state["f_budget"]) == 9000, "预算框同步成 9000（人均 3000 × 3）",
+      str(aw.session_state.get("f_budget")))
+toasts = [str(t.value) for t in aw.toast]
+lastw = aw.session_state.get("_last_payload") or {}
+check(lastw.get("days") == 4 and lastw.get("people") == 3 and lastw.get("budget") == 9000.0,
+      "payload 与界面三个数字一致",
+      f"days={lastw.get('days')} people={lastw.get('people')} budget={lastw.get('budget')}")
+check(lastw.get("per_person") == 3000 and lastw.get("foods") == ["烤鸭"]
+      and lastw.get("avoid") == ["行程别太满"],
+      "人均、美食、避雷一起送进 payload", str({k: lastw.get(k) for k in ('per_person', 'foods', 'avoid')}))
+check(any("4 天" in t and "9,000" in t for t in toasts),
+      "toast 同时告知天数与预算已改", str(toasts)[:120])
+settle(aw)
 # ---------------------------------------------------------------------------
 # 2b. 地标 -> 省市：「嘉应大学附近」必须认成广东梅州，且只填说到的那几栏
 # ---------------------------------------------------------------------------
