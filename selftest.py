@@ -956,7 +956,7 @@ def test_long_haul() -> None:
     for mode in ("high_speed", "flight", "coach", "self_drive"):
         plan = itinerary(copy.deepcopy(base_days))
         cons = constraints(transport_mode=mode, days=3, people=2, budget=5000, origin="北京市")
-        info = long_haul.apply(plan, cons, 1000, (116.4, 39.9), (121.47, 31.23))
+        info = long_haul.apply(plan, cons, 1000, (116.4, 39.9), (121.47, 31.23), realtime=False)
         first = plan["days"][0]["items"][0]
         last = plan["days"][-1]["items"][-1]
         first_attr = [one for one in plan["days"][0]["items"] if one.get("type") == "attraction"]
@@ -1008,6 +1008,135 @@ def test_long_haul() -> None:
         all(float(one.get("cost") or 0) == 0 for one in auto_near["days"][1]["items"] if one.get("type") == "attraction"),
         str(auto_near["days"][1]["items"]),
     )
+
+
+def test_fare_calibration() -> None:
+    """分档估算必须贴近公开公布价（误差 <= 15%），且不再是单条线性公式。"""
+    cases = [
+        ("high_speed", 137, 54.5),
+        ("high_speed", 308, 154.0),
+        ("high_speed", 693, 309.0),
+        ("high_speed", 1023, 443.5),
+        ("high_speed", 2298, 862.0),
+        ("train", 137, 21.5),
+        ("train", 308, 50.5),
+        ("train", 1318, 156.5),
+        ("train", 2298, 251.0),
+        ("flight", 1080, 800.0),
+        ("flight", 1500, 950.0),
+        ("flight", 2500, 1350.0),
+        ("coach", 137, 40.0),
+        ("coach", 690, 200.0),
+        ("coach", 1000, 280.0),
+    ]
+    for mode, dist, real in cases:
+        got = long_haul.estimate(mode, dist)["unit_price"]
+        err = abs(got - real) / real
+        check(f"分档估算[{mode} {dist}km] 误差 <= 15%", err <= 0.15,
+              f"估算 {got} / 真实 {real} / 误差 {err * 100:.1f}%")
+
+    short_rate = long_haul.estimate("high_speed", 137)["unit_price"] / 137
+    long_rate = long_haul.estimate("high_speed", 2298)["unit_price"] / 2298
+    check("高铁分档：长途单价低于短途", long_rate < short_rate * 0.95,
+          f"{short_rate:.3f} -> {long_rate:.3f} 元/公里")
+    anchors = sorted(long_haul.FARE_ANCHORS["high_speed"])
+    first_slope = (anchors[1][1] - anchors[0][1]) / (anchors[1][0] - anchors[0][0])
+    last_slope = (anchors[-1][1] - anchors[-2][1]) / (anchors[-1][0] - anchors[-2][0])
+    check("高铁分档：长距离边际费率明显低于短途", last_slope < first_slope * 0.7,
+          f"首段 {first_slope:.3f} 末段 {last_slope:.3f} 元/公里")
+
+    flight_1080 = long_haul.estimate("flight", 1080)["unit_price"]
+    flight_2160 = long_haul.estimate("flight", 2160)["unit_price"]
+    check("飞机分档：不再是 400 + 0.9 元/公里无限线性", flight_2160 < 400 + 0.9 * 2160,
+          f"1080={flight_1080} 2160={flight_2160} 线性值={400 + 0.9 * 2160:.0f}")
+
+    drive = long_haul.estimate("self_drive", 1000)["unit_price"]
+    check("自驾：保持油费+过路费口径（0.8-1.2 元/公里）", 0.8 * 1000 <= drive <= 1.2 * 1000, str(drive))
+
+
+def test_long_haul_realtime() -> None:
+    """模拟高德 V3 返回：解析 railway.spaces 真实票价；无对应车型回落估算。"""
+    payload = {
+        "status": "1",
+        "route": {"transits": [
+            {"duration": "22200", "segments": [
+                {"railway": {"trip": "G5", "name": "G5(北京-上海)", "type": "G字头的高铁火车",
+                             "departure_stop": {"name": "北京", "time": "0740"},
+                             "arrival_stop": {"name": "上海", "time": "1232"},
+                             "spaces": [{"code": "火车无座", "cost": "672.0"},
+                                        {"code": "火车一等座", "cost": "1075.0"}]}},
+            ]},
+            {"duration": "58560", "segments": [
+                {"railway": {"trip": "T109", "name": "T109(北京-上海)", "type": "T字头的特快火车",
+                             "spaces": [{"code": "火车硬卧上铺", "cost": "304.5"}]}},
+            ]},
+        ]},
+    }
+    payload_train_only = {
+        "status": "1",
+        "route": {"transits": [
+            {"duration": "58560", "segments": [
+                {"railway": {"trip": "K341", "name": "K341(北京-天津)", "type": "K字头的快车火车",
+                             "spaces": [{"code": "火车硬座", "cost": "21.5"}]}},
+            ]},
+        ]},
+    }
+    original_json = tools._get_json
+    original_city = tools._citycode
+    original_key = config.AMAP_KEY
+    try:
+        config.AMAP_KEY = "selftest-key"
+        tools._citycode = lambda lng, lat: "010"
+        tools._get_json = lambda *a, **k: copy.deepcopy(payload)
+        live = long_haul.query_realtime("high_speed", (116.4, 39.9), (121.47, 31.23))
+        tools._get_json = lambda *a, **k: copy.deepcopy(payload_train_only)
+        miss = long_haul.query_realtime("high_speed", (116.4, 39.9), (117.2, 39.08))
+        slow = long_haul.query_realtime("train", (116.4, 39.9), (117.2, 39.08))
+    finally:
+        tools._get_json = original_json
+        tools._citycode = original_city
+        config.AMAP_KEY = original_key
+
+    check("实时票价：G5 取最短耗时班次",
+          live is not None and live["trips"] and live["trips"][0].startswith("G5"), str(live))
+    check("实时票价：优先二等座，无座 672 兜底", live is not None and live["unit_price"] == 672.0,
+          str(live and live.get("unit_price")))
+    check("实时票价：标注来源与查询时间",
+          live is not None and live.get("source") == "amap" and ":" in str(live.get("queried_at")),
+          str(live and live.get("queried_at")))
+    check("实时票价：无 G/D 时高铁返回 None（回落估算）", miss is None, str(miss))
+    check("实时票价：普速模式命中 K 车硬座 21.5", slow is not None and slow["unit_price"] == 21.5,
+          str(slow and slow.get("unit_price")))
+
+    real = {
+        "unit_price": 672.0, "duration_min": 292, "trips": ["G5"], "seats": ["火车无座"],
+        "departure_stop": "北京", "arrival_stop": "上海", "departure_time": "0740",
+        "arrival_time": "1232", "queried_at": "2026-11-19 10:00", "source": "amap",
+    }
+    days = [
+        day(1, START, [item("首日景点A", "09:00", "11:00", 0, outdoor=False)]),
+        day(2, START, [item("中间日景点", "09:00", "11:00", 0, outdoor=False)]),
+        day(3, START, [item("末日景点A", "09:00", "11:00", 0, outdoor=False)]),
+    ]
+    plan = itinerary(copy.deepcopy(days))
+    cons = constraints(transport_mode="high_speed", days=3, people=2, budget=6000, origin="北京市")
+    original_query = long_haul.query_realtime
+    try:
+        long_haul.query_realtime = lambda mode, a, b: copy.deepcopy(real) if a == (116.4, 39.9) else None
+        mixed = long_haul.apply(plan, cons, 1000, (116.4, 39.9), (121.47, 31.23))
+    finally:
+        long_haul.query_realtime = original_query
+
+    first = plan["days"][0]["items"][0]
+    last = plan["days"][-1]["items"][-1]
+    check("实时接入：去程标注「实时」且写入车次", "实时" in str(first.get("name")) and "G5" in str(first.get("note")),
+          f"{first.get('name')} / {first.get('note')}")
+    check("实时接入：返程回落「估算」并标注非实时", "估算" in str(last.get("name")) and "非实时" in str(last.get("note")),
+          f"{last.get('name')} / {last.get('note')}")
+    check("实时接入：混合来源标记为 mixed", mixed.get("source") == "mixed", str(mixed.get("source")))
+    check("实时接入：实时价按人数计价（672*2=1344）",
+          mixed.get("outbound") == 1344 and mixed.get("total", 0) > 0,
+          f"out={mixed.get('outbound')} total={mixed.get('total')}")
 
 
 def test_truncated_json_fragment() -> None:
@@ -1114,6 +1243,8 @@ def main() -> int:
         test_route_v5_parsing,
         test_leg_transport,
         test_long_haul,
+        test_fare_calibration,
+        test_long_haul_realtime,
         test_truncated_json_fragment,
         test_split_opening_hours,
         test_agent_self_correction,

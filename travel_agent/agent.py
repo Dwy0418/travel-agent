@@ -1115,9 +1115,14 @@ class TravelAgent:
         distance = long_haul.haversine_km(origin_coord, dest_coord)
         info = long_haul.apply(itinerary, c, distance, origin_coord, dest_coord)
         if info:
+            if info.get("source") == "amap":
+                price_note = f"票价来自高德实时查询（{info.get('queried_at')}，往返约 {info['total']:.0f} 元）"
+            elif info.get("source") == "mixed":
+                price_note = f"单程实时、单程估算（往返约 {info['total']:.0f} 元，明细见行程条目）"
+            else:
+                price_note = f"票价按公布价分段估算（往返约 {info['total']:.0f} 元）"
             self._trace(
-                f"{self._rp()}大交通：{info['label']}，单程约 {info['distance_km']:.0f} 公里，"
-                f"票价按公开区间估算（往返约 {info['total']:.0f} 元）",
+                f"{self._rp()}大交通：{info['label']}，单程约 {info['distance_km']:.0f} 公里，{price_note}",
                 "budget",
             )
 

@@ -522,7 +522,7 @@ for _mode, _distance in (("flight", 1200), ("high_speed", 1000), ("self_drive", 
         "origin": "北京市", "city": "上海市", "days": 3, "people": 2,
         "budget": 6000, "transport_mode": _mode,
     })
-    _lh_info = A.long_haul.apply(_lh_itin, _lh_cons, _distance, (116.4, 39.9), (121.47, 31.23))
+    _lh_info = A.long_haul.apply(_lh_itin, _lh_cons, _distance, (116.4, 39.9), (121.47, 31.23), realtime=False)
     _lh_sum = A.tools.summarize_cost(_lh_itin)
     _lh_table = A._table_rows(_lh_itin["days"])
     _lh_cells = re.findall(r"<td class='itn-cost'>(.*?)</td>", _lh_table, flags=re.S)
@@ -536,6 +536,9 @@ for _mode, _distance in (("flight", 1200), ("high_speed", 1000), ("self_drive", 
     check(("去程：" in _lh_table and "返程：" in _lh_table and "估算" in _lh_table and _lh_info["total"] > 0),
           f"大交通[{_mode}]：去程/返程在表格可见并标注估算",
           _lh_table[:180])
+    check((_lh_info.get("source") == "estimate" and "非实时" in _lh_info.get("note", "")),
+          f"大交通[{_mode}]：无实时数据时明确标注估算/非实时",
+          f"source={_lh_info.get('source')} note={_lh_info.get('note', '')[:60]}")
     check((abs(round(_lh_sum_cells, 1) - _lh_sum["total"]) < 0.01),
           f"大交通[{_mode}]：表格累加 == total",
           f"table={round(_lh_sum_cells, 1)} total={_lh_sum['total']}")

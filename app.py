@@ -6185,12 +6185,25 @@ def show_result(result: dict[str, Any]) -> None:
 
     render_dashboard(result, itinerary, days)
     long_haul_info = itinerary.get("long_haul") or {}
-    if long_haul_info.get("estimated"):
-        st.caption(
-            f"大交通（{long_haul_info.get('label')}）往返票价按公开区间估算，"
-            f"约 ¥{float(long_haul_info.get('total') or 0):,.0f}，不是实时查询；"
-            "知识库和路线接口都拿不到当日真实票价。"
-        )
+    if long_haul_info:
+        _lh_source = long_haul_info.get("source")
+        _lh_total = float(long_haul_info.get("total") or 0)
+        _lh_label = long_haul_info.get("label")
+        if _lh_source == "amap":
+            st.caption(
+                f"大交通（{_lh_label}）票价来自高德实时查询（{long_haul_info.get('queried_at')}），"
+                f"往返约 ¥{_lh_total:,.0f}；为铁路票面单程价合计，不含市内接驳与手续费。"
+            )
+        elif _lh_source == "mixed":
+            st.caption(
+                f"大交通（{_lh_label}）去程/返程中一段为高德实时票价、另一段为公布价估算，"
+                f"往返约 ¥{_lh_total:,.0f}；行程条目名称分别标注「实时」与「估算」。"
+            )
+        elif long_haul_info.get("estimated"):
+            st.caption(
+                f"大交通（{_lh_label}）票价按公开公布价分段估算，约 ¥{_lh_total:,.0f}，"
+                "估算，非实时查询；该线路暂无可用实时票价数据。"
+            )
     render_adjust_panel()
     render_ai_bubble(itinerary, c)
 
