@@ -21,7 +21,9 @@ CHILD_WORDS = ("小孩", "儿童", "孩子", "亲子", "宝宝", "婴儿")
 #: 山类点位：「不想爬山」时一律不排
 MOUNTAIN_WORDS = ("山", "岭", "峰", "登山", "索道", "长城")
 #: 这些交通方式不可能免费，条目 cost 必须写实际金额，否则总价会被人为压低
-PAID_TRANSPORT_WORDS = ("打车", "出租", "网约车", "自驾", "包车", "高铁", "动车", "机票", "地铁", "公交")#: 孕妇 / 无障碍硬需求时要避开的点位特征
+PAID_TRANSPORT_WORDS = ("打车", "出租", "网约车", "自驾", "包车", "高铁", "动车", "机票", "地铁", "公交")
+# 这些字眼代表确实不需要花钱的用餐安排，其余 food/meal 条目 cost=0 一律要求补金额。
+FREE_MEAL_WORDS = ("免费", "自带", "干粮", "零食", "水果", "饮水")#: 孕妇 / 无障碍硬需求时要避开的点位特征
 ACCESS_BLOCK_WORDS = ("登山", "爬山", "长城", "陡坡", "长台阶", "索道", "山", "岭", "峰")
 
 
@@ -388,6 +390,15 @@ def validate(
                     elif any(word in text for word in PAID_TRANSPORT_WORDS):
                         zero_cost_paid = True
                     continue
+                if (
+                    kind in ("food", "meal")
+                    and _item_cost(item) <= 0
+                    and not any(word in text for word in FREE_MEAL_WORDS)
+                ):
+                    issues.append(
+                        f"{label}的「{item.get('name') or '用餐'}」是正餐却标了免费；"
+                        "请按人均 20-80 元补一个合理金额，只有确实免费/自带的餐食才写 0"
+                    )
                 # 第一个停靠点是当天起点，不产生市内车费；从第二个起才看「怎么到达」。
                 if (
                     kind in ("attraction", "food", "hotel")

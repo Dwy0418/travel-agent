@@ -27,7 +27,7 @@ from fpdf.enums import TableBordersLayout
 from fpdf.fonts import FontFace
 from PIL import Image
 
-from . import zh_labels
+from . import tools, zh_labels
 
 _logger = logging.getLogger("travel_agent.detail")
 
@@ -316,7 +316,8 @@ def _photo_strip(pdf: _ItineraryPDF, slots: list[tuple[str, bytes | None]]) -> N
 def _timeline_table(pdf: _ItineraryPDF, day: dict[str, Any]) -> None:
     rows: list[list[str]] = []
     day_total = 0.0
-    for item in day.get("items") or []:
+    # PDF 与网页表格、总预算共用同一个条目集合，避免三处各算各的。
+    for _day_index, _day, item in tools.iter_cost_items({"days": [day]}):
         try:
             cost = float(item.get("cost") or 0)
         except (TypeError, ValueError):

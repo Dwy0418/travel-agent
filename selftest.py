@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -707,6 +708,19 @@ def test_ui_apptest() -> None:
     check("界面：行程渲染无异常", not result_app.exception, str([e.value for e in result_app.exception]))
 
     md = " ".join(str(one.value) for one in result_app.markdown)
+    cost_cells = re.findall(r"<td class='itn-cost'>(.*?)</td>", md, flags=re.S)
+    table_sum = 0.0
+    for cell in cost_cells:
+        if "免费" in cell:
+            continue
+        digits = re.sub(r"[^\d.]", "", cell)
+        if digits:
+            table_sum += float(digits)
+    check(
+        "界面：表格逐行金额之和等于顶部总额",
+        bool(cost_cells) and abs(round(table_sum, 1) - float(result["budget"]["total"])) < 0.01,
+        f"table_sum={round(table_sum, 1)} total={result['budget']['total']} cells={len(cost_cells)}",
+    )
     check(
         "界面：行程表与预算表都渲染",
         "itn-table" in md

@@ -6035,9 +6035,14 @@ def render_adjust_panel() -> None:
 
 def _table_rows(days: list[dict[str, Any]]) -> str:
     """把行程压成 5 列：时间 / 安排 / 交通方式 / 花费 / 贴心提示。"""
+    # 与 summarize_cost 共用同一个条目集合，避免「算钱的行」和「表格里的行」分叉。
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for day_index, _day, item in tools.iter_cost_items({"days": days}):
+        grouped.setdefault(day_index, []).append(item)
+
     parts: list[str] = []
-    for day in days:
-        items = day.get("items") or []
+    for day_index, day in enumerate(days):
+        items = grouped.get(day_index, [])
         day_no = int(day.get("day") or 1)
         theme = _day_theme(items)
         head = f"第 {day_no} 天" + (f" · {theme}" if theme else "")
@@ -6103,9 +6108,16 @@ def render_itinerary_table(days: list[dict[str, Any]]) -> None:
 
 def show_result(result: dict[str, Any]) -> None:
     c = result["constraints"]
-    budget = result["budget"]
     itinerary = result["itinerary"]
     days = itinerary.get("days") or []
+    # 渲染前用「表格同一份条目集合」重算一次总额：即使上游 result 里带了旧口径的
+    # budget（日单价兜底 / 缓存结果），顶部、预算卡、PDF 也只会显示表格能看到的钱。
+    prior_budget = result.get("budget") or {}
+    budget = tools.summarize_cost(itinerary)
+    if prior_budget.get("route_note"):
+        budget["route_note"] = prior_budget["route_note"]
+    budget = tools.apply_cap(budget, float(c.get("budget") or 0))
+    result["budget"] = budget
 
     # 详情页左上角：清掉这次行程直接回首页空态
     if st.button("← 返回首页", key="result_home"):

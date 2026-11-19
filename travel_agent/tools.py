@@ -353,6 +353,17 @@ _COST_BUCKETS = {
 }
 
 
+def iter_cost_items(itinerary: dict[str, Any]):
+    """统计与渲染共用的唯一条目集合：逐条产出 (day_index, day, item)。
+
+    预算合计、行程表格、PDF 都从这里取条目，不允许任何一处再自己写一遍
+    `for day in days: for item in day["items"]`，否则统计集合与渲染集合会再次分叉。
+    """
+    for day_index, day in enumerate((itinerary or {}).get("days") or []):
+        for item in day.get("items") or []:
+            yield day_index, day, item
+
+
 def summarize_cost(itinerary: dict[str, Any]) -> dict[str, Any]:
     """唯一的花费口径：遍历 itinerary.days 的条目，逐项累加 cost。
 
@@ -361,15 +372,14 @@ def summarize_cost(itinerary: dict[str, Any]) -> dict[str, Any]:
     """
     sums = {"ticket": 0.0, "transport": 0.0, "food": 0.0, "hotel": 0.0, "other": 0.0}
     count = 0
-    for day in (itinerary or {}).get("days") or []:
-        for item in day.get("items") or []:
-            cost = _to_float(item.get("cost"), 0.0) or 0.0
-            if cost <= 0:
-                continue
-            kind = str(item.get("budget_item") or item.get("type") or "attraction").strip().lower()
-            bucket = _COST_BUCKETS.get(kind, "other")
-            sums[bucket] = round(sums[bucket] + cost, 1)
-            count += 1
+    for _day_index, _day, item in iter_cost_items(itinerary):
+        cost = _to_float(item.get("cost"), 0.0) or 0.0
+        if cost <= 0:
+            continue
+        kind = str(item.get("budget_item") or item.get("type") or "attraction").strip().lower()
+        bucket = _COST_BUCKETS.get(kind, "other")
+        sums[bucket] = round(sums[bucket] + cost, 1)
+        count += 1
     return {
         "success": True,
         "total": round(sum(sums.values()), 1),

@@ -6,6 +6,7 @@
 这里会把密钥临时清空，所以「出现规划报错」正好用来证明流程真的开跑了，
 而不是只回填了条件——否则每次跑测试都会真的调用一次大模型。
 """
+import copy
 import re
 import sys
 from datetime import date, timedelta
@@ -427,6 +428,8 @@ b3000_items = [
      "lng": 116.391, "lat": 39.903, "cost": 0, "transport": "driving", "walk_km": 1.2, "note": "广场平坦"},
     {"start": "10:45", "end": "12:00", "type": "attraction", "name": "中国国家博物馆",
      "lng": 116.401, "lat": 39.905, "cost": 0, "transport": "walking", "walk_km": 1.2, "note": ""},
+    {"start": "12:10", "end": "13:00", "type": "food", "name": "周边午餐",
+     "lng": 116.405, "lat": 39.907, "cost": 0, "transport": "walking", "walk_km": 0.4, "note": ""},
     {"start": "13:15", "end": "14:45", "type": "food", "name": "大董烤鸭",
      "lng": 116.410, "lat": 39.910, "cost": 321, "transport": "driving", "walk_km": 0, "note": ""},
     {"start": "15:00", "end": "16:00", "type": "hotel", "name": "王府井酒店",
@@ -453,6 +456,8 @@ def _offline_router(name: str, args: dict[str, Any], draft: dict[str, Any] | Non
 transport_issues = A.agent.validator.validate(b3000_itin, b3000_cons, router=_offline_router)
 check(any("没有单独的交通花费条目" in one for one in transport_issues),
       "校验：景点行写了付费出行却没车费条目，要求补车费", "；".join(transport_issues)[:160])
+check(any("是正餐却标了免费" in one for one in transport_issues),
+      "校验：正餐 cost=0 被拦，要求补合理金额", "；".join(transport_issues)[:160])
 
 _real_execute = A.tools.execute_tool
 A.tools.execute_tool = _offline_router
@@ -471,6 +476,21 @@ check(_leg_cost > 0 and _added >= 1 and _b3000_sum["breakdown"].get("transport",
       "兜底：没有交通条目时补出 transport 花费", f"leg={_leg_cost} added={_added} {_b3000_sum['breakdown']}")
 check(_b3000_sum["total"] == _b3000_item_sum,
       "兜底：补条目后总额仍等于明细逐项累加", f"total={_b3000_sum['total']} items={_b3000_item_sum}")
+
+_b3000_table = A._table_rows(b3000_itin["days"])
+_table_costs = re.findall(r"<td class='itn-cost'>(.*?)</td>", _b3000_table, flags=re.S)
+_table_sum = 0.0
+for _cell in _table_costs:
+    if "免费" in _cell:
+        continue
+    _digits = re.sub(r"[^\d.]", "", _cell)
+    if _digits:
+        _table_sum += float(_digits)
+check(("市内交通（估算）" in _b3000_table and "¥60" in _b3000_table),
+      "兜底条目在表格可见且带金额", _b3000_table[-220:])
+check((abs(round(_table_sum, 1) - _b3000_sum["total"]) < 0.01),
+      "兜底后表格逐行金额之和等于 total",
+      f"table_sum={round(_table_sum, 1)} total={_b3000_sum['total']}")
 
 _engine2 = A.agent.TravelAgent(trace_callback=lambda e: None, chat=lambda *a, **k: ({}, {}))
 _engine2.state = {"tool_results_cache": {}, "trace_log": []}
@@ -518,14 +538,21 @@ check(ui_text.count("¥87") >= 2 and "¥582" not in ui_text and "198" not in ui_
       "顶部预算条与预算卡片读同一个 ¥87，页面上没有第二个金额来源",
       f"¥87 ×{ui_text.count('¥87')}")
 
-# 超预算必须在页面上明示，并给出「一键极限压缩预算」入口，不能按正常规划默默展示
+# 超预算必须在页面上明示，并给出「一键极限压缩预算」入口，不能按正常规划默默展示。
+# 注意：show_result 会用明细重算 budget，所以必须把明细本身改成 582，不能只塞一个 582 的 budget。
+fake_over = copy.deepcopy(fake)
+_transport_set = False
+for _day in fake_over["itinerary"]["days"]:
+    for _item in _day.get("items") or []:
+        if _item.get("type") == "transport":
+            _item["cost"] = 0 if _transport_set else 82
+            _transport_set = True
+        elif _item.get("type") in ("food", "meal"):
+            _item["cost"] = 300
+        elif _item.get("type") == "hotel":
+            _item["cost"] = 200
 at_over = new_at()
-at_over.session_state["result"] = dict(
-    fake,
-    budget=A.tools.apply_cap(
-        {"total": 582, "breakdown": {"food": 300, "transport": 82, "hotel": 200}}, 200
-    ),
-)
+at_over.session_state["result"] = fake_over
 at_over.run()
 assert not at_over.exception, f"渲染超预算结果抛异常：{at_over.exception}"
 over_text = texts(at_over)
