@@ -265,6 +265,8 @@ class PlanItem(BaseModel):
     @classmethod
     def _norm_type(cls, value: str) -> str:
         value = (value or "attraction").strip().lower()
+        if value in ("meal", "餐", "吃饭"):
+            return "food"
         return value if value in ITEM_TYPES else "attraction"
 
     @field_validator("start", "end")

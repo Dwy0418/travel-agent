@@ -35,7 +35,9 @@ SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规�
     带宠物时不得安排博物馆 / 展馆 / 商场等室内场馆（一律按不允许宠物入内处理），只排户外点位；
     孕妇 / 坐轮椅时避开登山、长城、陡坡与长台阶路线；
     写了「想吃 X」至少安排一顿 X 类餐厅（type 填 food / meal，名称或备注写明菜名）；
-    写了「想看园林 / 古镇 / 海边」等风格时，优先能直接对上这类景观的景点。"""
+    写了「想看园林 / 古镇 / 海边」等风格时，优先能直接对上这类景观的景点。
+12. 只给每个条目写单次花费 cost；禁止在 summary / tips / note 里写任何合计、总价、分类小计或人均花费
+    （例如「交通108+餐饮70+住宿20」「总预算约198元」）。合计由程序逐项累加，你不要做任何加减。"""
 
 OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如下（字段名不得改动、禁止多余文字）：
 {
@@ -111,6 +113,31 @@ def _merge_tags(existing: Any, extra: list[str]) -> list[str]:
         if tag not in out:
             out.append(tag)
     return out
+
+
+_MONEY_IN_TIP = re.compile(r"[¥￥]|\d[\d,]*\s*(?:元|块)|预算|花费|合计|总价|总计|人均")
+
+
+def _item_cost(item: dict[str, Any]) -> float:
+    try:
+        return float(item.get("cost") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sanitize_tips(tips: list[Any]) -> list[str]:
+    """删掉小贴士里模型自己算的金额，只留文字建议。
+
+    按句/分句拆开，含金额、预算、合计、人均的分句整段丢弃；全被丢光的整条不再展示。
+    UI 与 PDF 都读这一份 tips，所以不会出现页面写 198、PDF 写别的。
+    """
+    cleaned: list[str] = []
+    for tip in tips:
+        pieces = re.split(r"[。；;！!\n，,]", str(tip or ""))
+        kept = [part.strip() for part in pieces if part.strip() and not _MONEY_IN_TIP.search(part)]
+        if kept:
+            cleaned.append("。".join(kept) + "。")
+    return cleaned
 
 
 def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -201,6 +228,7 @@ def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
         "pet": "宠物友好" in hard,
         "accessibility": "无障碍" in hard or "孕妇友好" in hard,
         "pregnant": "孕妇友好" in hard,
+        "extreme_budget": bool(raw.get("extreme_budget")),
     }
 
 
@@ -212,8 +240,7 @@ def constraint_lines(c: dict[str, Any]) -> str:
         f"- 目的地城市：{c['city']}",
         f"- 行程天数：{c['days']} 天（{'；'.join(dates)}）",
         f"- 出行人数：{c['people']} 人，房间：{c['rooms']} 间",
-        f"- 总预算上限：{c['budget']:.0f} 元（餐饮 {c['food_per_person_per_day']:.0f} 元/人/天，"
-        f"住宿 {c['hotel_per_night']:.0f} 元/间/晚）",
+        f"- 总预算上限：{c['budget']:.0f} 元（硬性红线；每个条目按实际单价写 cost，不要写合计）",
         f"- 同行人：{companions}",
         f"- 特殊偏好：{c['preferences'] or '无'}",
         f"- 每日可用时长：{c['daily_hours']:.0f} 小时（09:00-18:00）",
@@ -236,6 +263,11 @@ def constraint_lines(c: dict[str, Any]) -> str:
         )
     if c.get("indoor"):
         lines.append("- 室内优先：博物馆 / 美术馆 / 展馆至少占全部景点的一半，户外点位少排")
+    if c.get("extreme_budget"):
+        lines.append(
+            "- 极限压缩（必须执行）：住宿改青旅/床位或该城市最便宜的选项，市内交通以公交/地铁/步行为主，"
+            "餐饮按人均 30 元/天以内，只安排免费或低价景点；每一项仍要写清单次花费"
+        )
     return "\n".join(lines)
 
 
@@ -970,23 +1002,29 @@ class TravelAgent:
             itinerary = self.state.get("itinerary_draft") or {}
         # 实拍图只从真实 POI 缓存里取，按地点名精确匹配；没有就留空
         self._attach_poi_photos(itinerary)
+        # 小贴士里的金额是模型自己算的，和明细必然对不上：只留文字建议，金额一律删掉
+        itinerary["tips"] = _sanitize_tips(itinerary.get("tips") or [])
         status = "ok" if (itinerary and not issues) else ("max_iterations" if itinerary else "failed")
 
-        budget = tools.estimate_budget(
-            itinerary,
-            days=c["days"],
-            people=c["people"],
-            rooms=c["rooms"],
-            food_per_person_per_day=c["food_per_person_per_day"],
-            hotel_per_night=c["hotel_per_night"],
-        )
+        # 路线估算的点间交通费要落回明细条目，否则表里看不到、总价却多出一截
         leg_cost, leg_notes = self.state.get("leg_transport") or (0.0, [])
-        if leg_cost > 0 and budget.get("success"):
-            breakdown = budget.get("breakdown") or {}
-            breakdown["transport"] = round((breakdown.get("transport") or 0) + leg_cost, 1)
-            budget["breakdown"] = breakdown
-            budget["total"] = round((budget.get("total") or 0) + leg_cost, 1)
-            budget["route_note"] = f"点间交通费 {leg_cost:.0f} 元由路线规划结果按代码累加"
+        if leg_cost > 0:
+            for day in itinerary.get("days") or []:
+                for item in day.get("items") or []:
+                    if str(item.get("type") or "") == "transport" and _item_cost(item) <= 0:
+                        item["cost"] = round(leg_cost, 1)
+                        item["note"] = (str(item.get("note") or "") + " · 按路线估算").strip(" ·")
+                        leg_cost = 0.0
+                        break
+                if leg_cost <= 0:
+                    break
+
+        # 最终花费只认明细逐项累加，不再用日单价公式
+        budget = tools.summarize_cost(itinerary)
+        if leg_notes:
+            budget["route_note"] = "点间交通费按路线估算并已写入当天的交通条目"
+        cap = float(c.get("budget") or 0)
+        budget = tools.apply_cap(budget, cap)
         elapsed = round(time.time() - started, 1)
         tool_calls = self.state.get("tool_call_count", 0)
         cache_hits = self.state.get("cache_hits", 0)

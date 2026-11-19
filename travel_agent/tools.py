@@ -343,6 +343,52 @@ def plan_route(
 # --------------------------------------------------------------------------- #
 # 2.5 estimate_budget（纯代码计算，模型只传参数、不做算术）
 # --------------------------------------------------------------------------- #
+#: 条目类型 -> 预算大类。模型只报每条的单次花费，合计一律由代码累加。
+_COST_BUCKETS = {
+    "attraction": "ticket",
+    "transport": "transport",
+    "food": "food",
+    "meal": "food",
+    "hotel": "hotel",
+}
+
+
+def summarize_cost(itinerary: dict[str, Any]) -> dict[str, Any]:
+    """唯一的花费口径：遍历 itinerary.days 的条目，逐项累加 cost。
+
+    顶部预算条、预算卡片、详情页、PDF 全都只读这个结果，不存在第二套数字。
+    条目带了 budget_item 就按它归桶，否则按 type 归桶，无法归类的进 other。
+    """
+    sums = {"ticket": 0.0, "transport": 0.0, "food": 0.0, "hotel": 0.0, "other": 0.0}
+    count = 0
+    for day in (itinerary or {}).get("days") or []:
+        for item in day.get("items") or []:
+            cost = _to_float(item.get("cost"), 0.0) or 0.0
+            if cost <= 0:
+                continue
+            kind = str(item.get("budget_item") or item.get("type") or "attraction").strip().lower()
+            bucket = _COST_BUCKETS.get(kind, "other")
+            sums[bucket] = round(sums[bucket] + cost, 1)
+            count += 1
+    return {
+        "success": True,
+        "total": round(sum(sums.values()), 1),
+        "breakdown": {key: value for key, value in sums.items() if value},
+        "items_count": count,
+        "source": "items",
+    }
+
+
+def apply_cap(summary: dict[str, Any], cap: float) -> dict[str, Any]:
+    """给花费汇总盖上预算上限：over/over_by 供 UI 明确标出超预算。"""
+    cap = float(cap or 0)
+    total = float(summary.get("total") or 0)
+    summary["cap"] = cap
+    summary["over"] = bool(cap > 0 and total > cap)
+    summary["over_by"] = round(max(0.0, total - cap), 1)
+    return summary
+
+
 def estimate_budget(
     itinerary: dict[str, Any],
     days: int | None = None,
@@ -351,7 +397,10 @@ def estimate_budget(
     food_per_person_per_day: float | None = None,
     hotel_per_night: float | None = None,
 ) -> dict[str, Any]:
-    """总预算 = 门票 + 交通 + 餐饮(150/人/天) + 住宿(200/间/晚)。"""
+    """明细逐项累加；只有某类条目完全缺失时才用日单价兜底，并显式标注 estimated。
+
+    兜底值只在规划中途给模型参考，最终结果一律用 summarize_cost()，不会被日单价覆盖。
+    """
     try:
         itinerary = itinerary or {}
         people = max(1, int(people or 1))
@@ -361,28 +410,23 @@ def estimate_budget(
         food_rate = _to_float(food_per_person_per_day, config.FOOD_PER_PERSON_PER_DAY) or 150.0
         hotel_rate = _to_float(hotel_per_night, config.HOTEL_PER_NIGHT) or 200.0
 
-        ticket = 0.0
-        transport = 0.0
-        for day in day_list:
-            for item in day.get("items") or []:
-                cost = _to_float(item.get("cost"), 0.0) or 0.0
-                kind = item.get("type")
-                if kind == "attraction":
-                    ticket += cost
-                elif kind == "transport":
-                    transport += cost
+        summary = summarize_cost(itinerary)
+        breakdown = dict(summary["breakdown"])
+        fallback: list[str] = []
+        if "food" not in breakdown:
+            breakdown["food"] = round(food_rate * people * days, 1)
+            fallback.append("food")
         nights = max(days - 1, 0)
-        food = food_rate * people * days
-        hotel = hotel_rate * rooms * nights
+        if "hotel" not in breakdown and nights > 0:
+            breakdown["hotel"] = round(hotel_rate * rooms * nights, 1)
+            fallback.append("hotel")
         return {
             "success": True,
-            "total": round(ticket + transport + food + hotel, 1),
-            "breakdown": {
-                "ticket": round(ticket, 1),
-                "transport": round(transport, 1),
-                "food": round(food, 1),
-                "hotel": round(hotel, 1),
-            },
+            "total": round(sum(breakdown.values()), 1),
+            "breakdown": breakdown,
+            "estimated": bool(fallback),
+            "estimated_categories": fallback,
+            "source": "items+fallback" if fallback else "items",
             "meta": {
                 "days": days,
                 "people": people,

@@ -387,6 +387,94 @@ check(ay.session_state.get("_last_payload") is not None,
 settle(ay)
 
 # ---------------------------------------------------------------------------
+# 2a1. 花费只有一套口径：明细逐项累加；UI / PDF 同源；超预算必须被标记
+# ---------------------------------------------------------------------------
+bug_items = [
+    {"type": "transport", "name": "打车", "start": "09:00", "end": "09:20", "cost": 11},
+    {"type": "transport", "name": "打车", "start": "09:30", "end": "09:45", "cost": 7},
+    {"type": "transport", "name": "打车", "start": "10:00", "end": "10:15", "cost": 10},
+    {"type": "transport", "name": "打车", "start": "11:00", "end": "11:15", "cost": 10},
+    {"type": "transport", "name": "打车", "start": "15:00", "end": "15:15", "cost": 9},
+    {"type": "food", "name": "午餐", "start": "12:00", "end": "13:00", "cost": 20},
+    {"type": "hotel", "name": "青旅床位", "start": "20:00", "end": "20:30", "cost": 20},
+]
+bug_itin = {
+    "city": "测试市",
+    "summary": "预算 200 的两天行程",
+    "days": [{"day": 1, "date": "2026-01-01", "items": bug_items}],
+    "tips": ["总预算约198元（交通108+餐饮70+住宿20）", "带好身份证"],
+}
+bug_cost = A.tools.summarize_cost(bug_itin)
+check(bug_cost["total"] == 87 and bug_cost["breakdown"] == {"transport": 47, "food": 20, "hotel": 20},
+      "明细逐项累加：47+20+20=87，不再出现 food300 / hotel200",
+      f"{bug_cost['breakdown']} total={bug_cost['total']}")
+check(sum(bug_cost["breakdown"].values()) == bug_cost["total"] and bug_cost["source"] == "items",
+      "总价就是明细累加（同一份结果，没有第二套公式）", str(bug_cost))
+check(A.tools.apply_cap(dict(bug_cost), 200)["over"] is False,
+      "87 <= 200 不标超预算", str(A.tools.apply_cap(dict(bug_cost), 200)))
+over = A.tools.apply_cap({"total": 582}, 200)
+check(over["over"] is True and over["over_by"] == 382,
+      "582 > 200 必须标记超预算 ¥382", str(over))
+check(A.agent._sanitize_tips(bug_itin["tips"]) == ["带好身份证。"],
+      "带金额的小贴士被删掉，只留文字建议", str(A.agent._sanitize_tips(bug_itin["tips"])))
+
+fake = {
+    "status": "ok",
+    "itinerary": dict(bug_itin, tips=A.agent._sanitize_tips(bug_itin["tips"])),
+    "constraints": {
+        "city": "测试市", "days": 1, "people": 2, "budget": 200, "rooms": 1,
+        "start_date": "2026-01-01", "companions": [], "preferences": "",
+    },
+    "budget": A.tools.apply_cap(dict(bug_cost), 200),
+    "issues": [], "iterations": 1, "tool_calls": 0, "cache_hits": 0,
+    "elapsed": 1.0, "trace": [], "usage": {}, "markdown": "",
+}
+# PDF 与页面读的是同一个 result["budget"]：拦住格式化函数，确认它拿到的就是 87/200，没有 582
+pdf_money: list[Any] = []
+_orig_money = A.pdf_export._money
+
+
+def _spy_money(value: Any, free: str = "免费") -> str:
+    pdf_money.append(value)
+    return _orig_money(value, free=free)
+
+
+A.pdf_export._money = _spy_money
+try:
+    A.pdf_export.build_itinerary_pdf(fake)
+finally:
+    A.pdf_export._money = _orig_money
+pdf_numbers = {float(v) for v in pdf_money if isinstance(v, (int, float))}
+check(87.0 in pdf_numbers and 200.0 in pdf_numbers and 582.0 not in pdf_numbers,
+      "PDF 总价与明细累加同源（读到 87/200，没有 582）", str(sorted(pdf_numbers)))
+
+at_bug = new_at()
+at_bug.session_state["result"] = fake
+at_bug.run()
+assert not at_bug.exception, f"渲染预算结果抛异常：{at_bug.exception}"
+ui_text = texts(at_bug)
+check(ui_text.count("¥87") >= 2 and "¥582" not in ui_text and "198" not in ui_text,
+      "顶部预算条与预算卡片读同一个 ¥87，页面上没有第二个金额来源",
+      f"¥87 ×{ui_text.count('¥87')}")
+
+# 超预算必须在页面上明示，并给出「一键极限压缩预算」入口，不能按正常规划默默展示
+at_over = new_at()
+at_over.session_state["result"] = dict(
+    fake,
+    budget=A.tools.apply_cap(
+        {"total": 582, "breakdown": {"food": 300, "transport": 82, "hotel": 200}}, 200
+    ),
+)
+at_over.run()
+assert not at_over.exception, f"渲染超预算结果抛异常：{at_over.exception}"
+over_text = texts(at_over)
+check("超出预算" in over_text and "¥382" in over_text,
+      "超预算 ¥382 在页面上明示", over_text[-120:])
+check(any("极限压缩" in str(b.label) for b in at_over.button),
+      "超预算时提供「一键极限压缩预算」按钮",
+      str([str(b.label) for b in at_over.button])[:120])
+
+# ---------------------------------------------------------------------------
 # 2a2. 人数从大致想法提取：明确说法覆盖人数框，含混说法保持原值并提示
 # ---------------------------------------------------------------------------
 ap = new_at()

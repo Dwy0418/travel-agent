@@ -1373,6 +1373,19 @@ div[data-testid="stMetricValue"] { color: #F8FAFC !important; }
 }
 .tip-card .tip-soft { color: #FDE68A; }
 
+/* 超预算：必须一眼看见，不能按正常规划默默展示 */
+.over-budget-banner {
+    font-size: 13.5px;
+    color: #FECACA;
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(248, 113, 113, 0.5);
+    border-radius: 14px;
+    padding: 11px 15px;
+    margin: 10px 0 6px;
+    line-height: 1.6;
+    font-weight: 600;
+}
+
 /* 柔和提示条（自动重排说明），不出现报错感 */
 .soft-note {
     font-size: 13px;
@@ -5044,6 +5057,7 @@ AGENT_PAYLOAD_KEYS = (
     "styles",
     "per_person",
     "request",
+    "extreme_budget",
 )
 
 
@@ -6149,6 +6163,20 @@ def show_result(result: dict[str, Any]) -> None:
 
     st.subheader("预算与花费")
     render_budget(budget, float(c.get("budget") or 0))
+    if budget.get("over"):
+        st.markdown(
+            "<div class='over-budget-banner'>"
+            f"⚠️ 这份行程超出预算 ¥{float(budget.get('over_by') or 0):,.0f}"
+            f"（预算 ¥{float(c.get('budget') or 0):,.0f}，明细累加 ¥{float(budget.get('total') or 0):,.0f}）"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("⚡ 一键极限压缩预算", key="extreme_budget"):
+            payload = dict(st.session_state.get("_last_payload") or {})
+            payload["extreme_budget"] = True
+            st.session_state.pop("result", None)
+            if _start_plan(str(payload.get("request") or c.get("request") or ""), payload):
+                st.rerun()
 
     render_tips(itinerary.get("tips") or [])
 

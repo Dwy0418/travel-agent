@@ -20,7 +20,8 @@ ELDER_WORDS = ("老人", "长辈", "父母", "爷爷", "奶奶", "外公", "外�
 CHILD_WORDS = ("小孩", "儿童", "孩子", "亲子", "宝宝", "婴儿")
 #: 山类点位：「不想爬山」时一律不排
 MOUNTAIN_WORDS = ("山", "岭", "峰", "登山", "索道", "长城")
-#: 孕妇 / 无障碍硬需求时要避开的点位特征
+#: 这些交通方式不可能免费，条目 cost 必须写实际金额，否则总价会被人为压低
+PAID_TRANSPORT_WORDS = ("打车", "出租", "网约车", "自驾", "包车", "高铁", "动车", "机票", "地铁", "公交")#: 孕妇 / 无障碍硬需求时要避开的点位特征
 ACCESS_BLOCK_WORDS = ("登山", "爬山", "长城", "陡坡", "长台阶", "索道", "山", "岭", "峰")
 
 
@@ -147,6 +148,13 @@ def weather_map(
 # --------------------------------------------------------------------------- #
 # 主校验入口
 # --------------------------------------------------------------------------- #
+def _item_cost(item: dict[str, Any]) -> float:
+    try:
+        return float(item.get("cost") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def validate(
     itinerary: dict[str, Any],
     constraints: dict[str, Any],
@@ -351,6 +359,32 @@ def validate(
         for item in attractions:
             seen.setdefault(item.get("name") or "", []).append(label)
 
+    # 花费明细必须完整：每天要有正餐花费，过夜要有住宿花费；
+    # 否则逐项累加出来的总价会被人为压低，预算判断就失真了。
+    if days:
+        total_days = len(days)
+        for idx, day in enumerate(days):
+            label = f"第 {idx + 1} 天"
+            items = day.get("items") or []
+            if not any(
+                str(item.get("type") or "") in ("food", "meal") and _item_cost(item) > 0
+                for item in items
+            ):
+                issues.append(f"{label}没有任何餐饮花费，请补一条带 cost 的正餐（再便宜也要写实际金额）")
+            if idx < total_days - 1 and not any(
+                str(item.get("type") or "") == "hotel" and _item_cost(item) > 0 for item in items
+            ):
+                issues.append(f"{label}需要过夜却没有住宿花费，请补一条带 cost 的住宿")
+            for item in items:
+                if str(item.get("type") or "") != "transport" or _item_cost(item) > 0:
+                    continue
+                text = f"{item.get('name') or ''} {item.get('note') or ''}"
+                if any(word in text for word in PAID_TRANSPORT_WORDS):
+                    issues.append(
+                        f"{label}的「{item.get('name') or '交通'}」是付费交通却没有写 cost，"
+                        "请按实际车费补上（打车/地铁/公交也要写金额）"
+                    )
+
     # 全维度约束校验：避雷 / 硬需求 / 美食，都是「说了就必须在点位上看得到」
     all_attrs = [
         item for day in days for item in (day.get("items") or []) if item.get("type") == "attraction"
@@ -421,10 +455,10 @@ def validate(
         total = budget_result["total"] + max(0.0, extra_transport)
         if total > float(budget):
             parts = budget_result["breakdown"]
-            transport = parts["transport"] + max(0.0, extra_transport)
+            transport = float(parts.get("transport") or 0) + max(0.0, extra_transport)
             issues.append(
-                f"当前行程总预算 {total:.0f} 元（门票 {parts['ticket']:.0f} + 交通 "
-                f"{transport:.0f} + 餐饮 {parts['food']:.0f} + 住宿 {parts['hotel']:.0f}），"
+                f"当前行程总预算 {total:.0f} 元（门票 {float(parts.get('ticket') or 0):.0f} + 交通 "
+                f"{transport:.0f} + 餐饮 {float(parts.get('food') or 0):.0f} + 住宿 {float(parts.get('hotel') or 0):.0f}），"
                 f"超过用户设定的 {float(budget):.0f} 元预算，请减少收费景点或调整交通/住宿标准"
             )
     return issues
