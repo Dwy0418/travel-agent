@@ -499,6 +499,56 @@ _added2 = A.agent._ensure_transport_items(bug_itin, _engine2.state.get("leg_by_d
 check(_leg2 == 0 and _added2 == 0,
       "兜底：已有正常交通条目不重复累加", f"leg={_leg2} added={_added2}")
 
+# 大交通：飞机 / 高铁 / 自驾各生成一条去程、一条返程，写进首末日明细
+_lh_days = [
+    {"day": 1, "date": "2026-12-01", "weather_note": "", "items": [
+        {"start": "09:00", "end": "11:00", "type": "attraction", "name": "外滩", "lng": 121.49, "lat": 31.24, "cost": 0},
+        {"start": "13:00", "end": "15:00", "type": "attraction", "name": "豫园", "lng": 121.49, "lat": 31.23, "cost": 40},
+        {"start": "15:10", "end": "17:30", "type": "attraction", "name": "南京路", "lng": 121.47, "lat": 31.24, "cost": 0},
+    ]},
+    {"day": 2, "date": "2026-12-02", "weather_note": "", "items": [
+        {"start": "09:00", "end": "11:00", "type": "attraction", "name": "博物馆", "lng": 121.47, "lat": 31.23, "cost": 0},
+        {"start": "12:00", "end": "13:00", "type": "food", "name": "午餐", "lng": 121.47, "lat": 31.23, "cost": 40},
+    ]},
+    {"day": 3, "date": "2026-12-03", "weather_note": "", "items": [
+        {"start": "09:00", "end": "11:00", "type": "attraction", "name": "公园", "lng": 121.46, "lat": 31.22, "cost": 0},
+        {"start": "13:00", "end": "15:00", "type": "attraction", "name": "美术馆", "lng": 121.46, "lat": 31.22, "cost": 60},
+        {"start": "15:10", "end": "17:30", "type": "attraction", "name": "商场", "lng": 121.46, "lat": 31.22, "cost": 0},
+    ]},
+]
+for _mode, _distance in (("flight", 1200), ("high_speed", 1000), ("self_drive", 500)):
+    _lh_itin = {"city": "上海市", "summary": "", "tips": [], "days": copy.deepcopy(_lh_days)}
+    _lh_cons = A.agent.build_constraints({
+        "origin": "北京市", "city": "上海市", "days": 3, "people": 2,
+        "budget": 6000, "transport_mode": _mode,
+    })
+    _lh_info = A.long_haul.apply(_lh_itin, _lh_cons, _distance, (116.4, 39.9), (121.47, 31.23))
+    _lh_sum = A.tools.summarize_cost(_lh_itin)
+    _lh_table = A._table_rows(_lh_itin["days"])
+    _lh_cells = re.findall(r"<td class='itn-cost'>(.*?)</td>", _lh_table, flags=re.S)
+    _lh_sum_cells = 0.0
+    for _cell in _lh_cells:
+        if "免费" in _cell:
+            continue
+        _digits = re.sub(r"[^\d.]", "", _cell)
+        if _digits:
+            _lh_sum_cells += float(_digits)
+    check(("去程：" in _lh_table and "返程：" in _lh_table and "估算" in _lh_table and _lh_info["total"] > 0),
+          f"大交通[{_mode}]：去程/返程在表格可见并标注估算",
+          _lh_table[:180])
+    check((abs(round(_lh_sum_cells, 1) - _lh_sum["total"]) < 0.01),
+          f"大交通[{_mode}]：表格累加 == total",
+          f"table={round(_lh_sum_cells, 1)} total={_lh_sum['total']}")
+    check((len([x for x in _lh_itin["days"][0]["items"] if x.get("type") == "attraction"]) <= 2
+           and len([x for x in _lh_itin["days"][-1]["items"] if x.get("type") == "attraction"]) <= 2),
+          f"大交通[{_mode}]：首末日各留半天", str(_lh_itin["days"][0]["items"]))
+    check((len(_lh_itin["days"][1]["items"]) == len(_lh_days[1]["items"])),
+          f"大交通[{_mode}]：中间日不变", str(len(_lh_itin["days"][1]["items"])))
+    _lh_over = A.tools.apply_cap(dict(_lh_sum), 200)
+    check((_lh_over.get("over") and _lh_over.get("over_by", 0) > 0),
+          f"大交通[{_mode}]：往返票计入预算后可判定超支",
+          str(_lh_over))
+
 fake = {
     "status": "ok",
     "itinerary": dict(bug_itin, tips=A.agent._sanitize_tips(bug_itin["tips"])),

@@ -10,7 +10,7 @@ import time
 from datetime import date, timedelta
 from typing import Any, Callable
 
-from . import config, llm, natural, schemas, tools, validator, zh_labels
+from . import config, llm, long_haul, natural, schemas, tools, validator, zh_labels
 
 #: 技术明细（原始参数、坐标、耗时）只进后台日志文件，不上屏。
 _detail_logger = logging.getLogger("travel_agent.detail")
@@ -43,7 +43,10 @@ SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规�
     不能代替交通条目。只有全程步行或免费接驳时，才允许没有 transport 条目。
 14. 付费项目必须写真实单价，禁止用 0 敷衍：打车 / 网约车按里程估 10-30 元/段，正餐按 20-80 元/人，
     门票按实际票价填写。只有确实免费的项目（公园、步道、免费展馆、酒店含早）才填 0；
-    安排了打车、正餐、收费景点却写 0 / 免费，会被校验打回重写。"""
+    安排了打车、正餐、收费景点却写 0 / 免费，会被校验打回重写。
+15. 首日与末日必须给大交通留时间：首日只排到达后的半天（最多 2 个景点、游览不超过 3 小时），
+    末日只排返程前的半天（最多 2 个景点），返程后不再排景点；中间日正常安排。
+    跨城去程/回程条目由代码统一生成并标注「估算」，你不要自行添加跨城大交通，也不要编造机票/高铁票价。"""
 
 OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如下（字段名不得改动、禁止多余文字）：
 {
@@ -257,11 +260,20 @@ def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     indoor = "室内为主" in preferences
     slow_pace = elder or child or relaxed
 
+    mode = str(raw.get("transport_mode") or long_haul.DEFAULT_MODE).strip()
+    if mode not in long_haul.MODE_LABELS:
+        mode = next(
+            (code for code, label in long_haul.MODE_LABELS.items() if label == mode),
+            long_haul.DEFAULT_MODE,
+        )
+
     return {
         "origin": str(raw.get("origin") or "").strip(),
         "city": city,
         "days": days,
         "people": people,
+        "transport_mode": mode,
+        "transport_label": long_haul.mode_label(mode),
         "rooms": max(1, int(raw.get("rooms") or (people + 1) // 2)),
         "budget": budget,
         "companions": companions,
@@ -306,6 +318,9 @@ def constraint_lines(c: dict[str, Any]) -> str:
         f"- 同行人：{companions}",
         f"- 特殊偏好：{c['preferences'] or '无'}",
         f"- 每日可用时长：{c['daily_hours']:.0f} 小时（09:00-18:00）",
+        f"- 大交通：{long_haul.mode_label(c.get('transport_mode'))}。首日扣除大交通后只排半天"
+        "（最多 2 个景点、游览不超过 3 小时），末日返程前只排半天（最多 2 个景点）；"
+        "去程/回程条目由代码统一生成，你不要自行添加跨城大交通，也不要写机票/高铁票价",
     ]
     if c.get("origin"):
         lines.insert(0, f"- 出发地：{c['origin']}")
@@ -774,6 +789,13 @@ class TravelAgent:
         else:
             self._trace(f"{self._rp()}城市定位失败，天气校验将跳过", "prepare")
             self._log_detail("city_center_failed", {"city": c["city"], "error": result.get("error")})
+        # 出发地坐标：只用于估算跨城距离和票价（不参与景点路线）
+        origin = str(c.get("origin") or "").strip()
+        if origin and origin != c["city"]:
+            seed = self._execute("geocode", {"place_name": origin}, source="prepare")
+            if seed.get("success"):
+                c["origin_lng"], c["origin_lat"] = seed["lng"], seed["lat"]
+                self._log_detail("origin_center", {"city": origin, "lng": seed["lng"], "lat": seed["lat"]})
 
     # ------------------------------------------------------------------ #
     # 代码侧预取：进模型前把天气与景点候选查好（省掉 1-2 轮纯取数往返）
@@ -1078,6 +1100,26 @@ class TravelAgent:
         # 小贴士里的金额是模型自己算的，和明细必然对不上：只留文字建议，金额一律删掉
         itinerary["tips"] = _sanitize_tips(itinerary.get("tips") or [])
         status = "ok" if (itinerary and not issues) else ("max_iterations" if itinerary else "failed")
+
+        # 跨城去程/回程由代码统一生成：写进首末日明细，价格按公开区间估算并标注「估算」。
+        origin_coord = (
+            (c.get("origin_lng"), c.get("origin_lat"))
+            if c.get("origin_lng") is not None and c.get("origin_lat") is not None
+            else None
+        )
+        dest_coord = (
+            (c.get("lng"), c.get("lat"))
+            if c.get("lng") is not None and c.get("lat") is not None
+            else None
+        )
+        distance = long_haul.haversine_km(origin_coord, dest_coord)
+        info = long_haul.apply(itinerary, c, distance, origin_coord, dest_coord)
+        if info:
+            self._trace(
+                f"{self._rp()}大交通：{info['label']}，单程约 {info['distance_km']:.0f} 公里，"
+                f"票价按公开区间估算（往返约 {info['total']:.0f} 元）",
+                "budget",
+            )
 
         # 路线估算的点间交通费要落回明细条目，否则表里看不到、总价却多出一截。
         # 只写当天缺车费的条目；当天没有交通条目就新增一条，避免 transport 桶为 0。

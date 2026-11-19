@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from travel_agent import agent, config, schemas, tools, validator, zh_labels
+from travel_agent import agent, config, long_haul, schemas, tools, validator, zh_labels
 
 TODAY = date.today()
 START = (TODAY + timedelta(days=1)).isoformat()
@@ -480,7 +481,7 @@ def test_agent_self_correction() -> None:
     engine = agent.TravelAgent(trace_callback=traces.append, chat=fake_chat)
     result = engine.run(
         "想去客家文化相关的地方，行程轻松一点",
-        {"city": "梅州市", "days": 2, "people": 2, "budget": 1000, "start_date": START, "companions": "带老人"},
+        {"city": "梅州市", "days": 2, "people": 2, "budget": 3000, "start_date": START, "companions": "带老人"},
     )
 
     check(
@@ -504,7 +505,7 @@ def test_agent_self_correction() -> None:
         and any(entry["kind"] == "tool_call" for entry in result["trace"]),
         f"trace={len(result['trace'])}",
     )
-    check("Agent：预算由代码计算且未超限", result["budget"]["total"] <= 1000, str(result["budget"].get("total")))
+    check("Agent：预算由代码计算且未超限", result["budget"]["total"] <= 3000, str(result["budget"].get("total")))
     check(
         "Agent：Trace 回调收到全部条目",
         len(traces) == len(result["trace"]) and len(traces) > 0,
@@ -625,7 +626,7 @@ def test_agent_max_iterations() -> None:
     engine = agent.TravelAgent(chat=stubborn_chat)
     result = engine.run(
         "随便规划",
-        {"city": "梅州市", "days": 2, "people": 2, "budget": 1000, "start_date": START, "companions": "带老人"},
+        {"city": "梅州市", "days": 2, "people": 2, "budget": 3000, "start_date": START, "companions": "带老人"},
     )
     check(
         "Agent：问题无法修复时不会死循环，并保留问题清单",
@@ -665,6 +666,23 @@ def test_ui_apptest() -> None:
             and all("DeepSeek" not in str(caption.value) for caption in page_app.caption),
             seed_md[:120],
         )
+
+        mode_boxes = [box for box in page_app.selectbox if str(box.label) == "交通方式"]
+        check(
+            "界面：精确设置里有交通方式且默认高铁/动车",
+            bool(mode_boxes) and str(mode_boxes[0].value) == "高铁/动车",
+            str([(box.label, box.value) for box in page_app.selectbox]),
+        )
+        if mode_boxes:
+            mode_boxes[0].set_value("飞机").run()
+            check(
+                "界面：交通方式切换后写入 session_state",
+                str(page_app.session_state.get("f_transport_mode")) == "飞机",
+                str(page_app.session_state.get("f_transport_mode")),
+            )
+            next(
+                box for box in page_app.selectbox if str(box.label) == "交通方式"
+            ).set_value("高铁/动车").run()
 
         start = next((b for b in page_app.button if "开始规划" in str(b.label)), None)
         check("界面：首页保留「开始规划」按钮", start is not None, str([b.label for b in page_app.button])[:120])
@@ -917,6 +935,81 @@ def test_leg_transport() -> None:
     check("预算校验：点间交通费计入总预算", has_issue(over, "超过用户设定的"), str(over)[:160])
 
 
+def test_long_haul() -> None:
+    """大交通：去程/回程必须写进首末日明细，首末日留半天，票价标注估算。"""
+    base_days = [
+        day(1, START, [
+            item("首日景点A", "09:00", "11:00", 0, outdoor=False),
+            item("首日景点B", "13:00", "15:00", 0, outdoor=False),
+            item("首日景点C", "15:10", "17:30", 0, outdoor=False),
+        ]),
+        day(2, START, [
+            item("中间日景点", "09:00", "11:00", 0, outdoor=False),
+            item("中间日午餐", "12:00", "13:00", 40, kind="food", outdoor=False),
+        ]),
+        day(3, START, [
+            item("末日景点A", "09:00", "11:00", 0, outdoor=False),
+            item("末日景点B", "13:00", "15:00", 0, outdoor=False),
+            item("末日景点C", "15:10", "17:30", 0, outdoor=False),
+        ]),
+    ]
+    for mode in ("high_speed", "flight", "coach", "self_drive"):
+        plan = itinerary(copy.deepcopy(base_days))
+        cons = constraints(transport_mode=mode, days=3, people=2, budget=5000, origin="北京市")
+        info = long_haul.apply(plan, cons, 1000, (116.4, 39.9), (121.47, 31.23))
+        first = plan["days"][0]["items"][0]
+        last = plan["days"][-1]["items"][-1]
+        first_attr = [one for one in plan["days"][0]["items"] if one.get("type") == "attraction"]
+        last_attr = [one for one in plan["days"][-1]["items"] if one.get("type") == "attraction"]
+        summary = tools.summarize_cost(plan)
+        item_sum = round(sum(float(one.get("cost") or 0) for d in plan["days"] for one in d["items"]), 1)
+        check(
+            f"大交通[{mode}]：首末条为去程/返程且标注估算",
+            str(first.get("name", "")).startswith("去程：")
+            and str(last.get("name", "")).startswith("返程：")
+            and "估算" in str(first.get("name"))
+            and "估算" in str(first.get("note")),
+            f"{first.get('name')} / {last.get('name')}",
+        )
+        check(
+            f"大交通[{mode}]：首末日各留半天（景点 <= 2）",
+            len(first_attr) <= 2 and len(last_attr) <= 2,
+            f"first={len(first_attr)} last={len(last_attr)}",
+        )
+        check(
+            f"大交通[{mode}]：中间日不被裁剪",
+            len(plan["days"][1]["items"]) == len(base_days[1]["items"]),
+            str(len(plan["days"][1]["items"])),
+        )
+        check(
+            f"大交通[{mode}]：往返票价计入 total 且等于明细和",
+            info["total"] > 0 and summary["breakdown"].get("transport", 0) > 0
+            and summary["total"] == item_sum,
+            f"info={info['total']} summary={summary['total']} items={item_sum}",
+        )
+        long_haul_items = [
+            one for d in plan["days"] for one in d["items"] if one.get("long_haul")
+        ]
+        check(f"大交通[{mode}]：只生成两条，不重复", len(long_haul_items) == 2, str(len(long_haul_items)))
+
+    auto_near = itinerary(copy.deepcopy(base_days))
+    long_haul.apply(auto_near, constraints(transport_mode="auto", days=3), 200, None, None)
+    auto_far = itinerary(copy.deepcopy(base_days))
+    long_haul.apply(auto_far, constraints(transport_mode="auto", days=3), 1500, None, None)
+    check(
+        "大交通：不限模式按距离选择（近途高铁/远途飞机）",
+        long_haul.resolve_mode("auto", 200) == "coach"
+        and long_haul.resolve_mode("auto", 800) == "high_speed"
+        and long_haul.resolve_mode("auto", 1500) == "flight",
+        "距离分流不正确",
+    )
+    check(
+        "大交通：免费项目仍保持 0 元",
+        all(float(one.get("cost") or 0) == 0 for one in auto_near["days"][1]["items"] if one.get("type") == "attraction"),
+        str(auto_near["days"][1]["items"]),
+    )
+
+
 def test_truncated_json_fragment() -> None:
     """回归：输出被截断时，不能把某个「天」的片段当成整份行程。"""
     full = as_text(GOOD_PLAN)
@@ -1020,6 +1113,7 @@ def main() -> int:
         test_markdown,
         test_route_v5_parsing,
         test_leg_transport,
+        test_long_haul,
         test_truncated_json_fragment,
         test_split_opening_hours,
         test_agent_self_correction,

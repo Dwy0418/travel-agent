@@ -26,7 +26,7 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from travel_agent import agent, config, natural, pdf_export, regions, tools, zh_labels
+from travel_agent import agent, config, long_haul, natural, pdf_export, regions, tools, zh_labels
 
 from components.map_intro import map_intro
 
@@ -4334,8 +4334,22 @@ CONSTRAINT_DEFAULTS: dict[str, Any] = {
     # 人数只有一个口径：这个字段。同行人/偏好不再参与人数与预算计算。
     "people": 2,
     "budget": 3000,
+    "transport_mode": long_haul.DEFAULT_MODE,
     "idea": "",
 }
+
+TRANSPORT_MODE_ORDER = ("flight", "high_speed", "train", "coach", "self_drive", "auto")
+
+
+def _transport_mode_code(value: Any) -> str:
+    """表单里存的是中文标签，payload 里统一转成代码。"""
+    text = str(value or "")
+    if text in long_haul.MODE_LABELS:
+        return text
+    return next(
+        (code for code, label in long_haul.MODE_LABELS.items() if label == text),
+        long_haul.DEFAULT_MODE,
+    )
 
 
 def _date_bounds() -> tuple[date, date]:
@@ -4433,6 +4447,37 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         f"{start_date:%m月%d日} 出发，{end_date:%m月%d日} 返程"
     )
 
+    # ---------------- 🚄 大交通：决定首末日半天与往返票价 ----------------
+    st.markdown("<hr class='sec-line'>", unsafe_allow_html=True)
+    st.markdown("<div class='sec-title'>🚄 大交通</div>", unsafe_allow_html=True)
+
+    mode_labels = [long_haul.MODE_LABELS[code] for code in TRANSPORT_MODE_ORDER]
+    seed_state(
+        k("transport_mode"),
+        long_haul.MODE_LABELS.get(_transport_mode_code(base.get("transport_mode")), "高铁/动车"),
+    )
+    selected_mode = st.selectbox(
+        "交通方式",
+        mode_labels,
+        key=k("transport_mode"),
+        help="去程/回程各记一笔交通条目；票价按公开区间估算并标注「估算」，不是实时查询",
+    )
+    transport_mode = _transport_mode_code(selected_mode)
+    st.caption("票价按公开区间估算并标注「估算」，不是实时查询；往返各一笔，计入总预算。")
+    origin_province = st.session_state.get("f_origin_province")
+    if (
+        transport_mode == "self_drive"
+        and days <= 2
+        and origin_province
+        and province not in ("", UNLIMITED_PROVINCE)
+        and origin_province != province
+    ):
+        st.markdown(
+            "<div class='ci-composer-hint'>⚠️ 跨省自驾只有 "
+            f"{days} 天可能过紧：我们不会自动改你的日期，请自行确认出发/回程日期是否够用。</div>",
+            unsafe_allow_html=True,
+        )
+
     # ---------------- 👥 人员与预算：人数是唯一口径 ----------------
     st.markdown("<hr class='sec-line'>", unsafe_allow_html=True)
     st.markdown("<div class='sec-title'>👥 人员与预算</div>", unsafe_allow_html=True)
@@ -4465,6 +4510,7 @@ def _constraint_fields(prefix: str, *, seed: dict[str, Any] | None = None) -> di
         "days": int(days),
         "people": int(people),
         "budget": float(budget),
+        "transport_mode": transport_mode,
         "start_date": start_date.isoformat(),
         "end": end_date.isoformat(),
     }
@@ -4881,6 +4927,10 @@ def _state_snapshot() -> dict[str, Any]:
         "days": days,
         "people": st.session_state.get("f_people", CONSTRAINT_DEFAULTS["people"]),
         "budget": st.session_state.get("f_budget", CONSTRAINT_DEFAULTS["budget"]),
+        "transport_mode": st.session_state.get(
+            "f_transport_mode",
+            long_haul.MODE_LABELS[CONSTRAINT_DEFAULTS["transport_mode"]],
+        ),
         "idea": str(st.session_state.get("f_idea", CONSTRAINT_DEFAULTS["idea"]) or ""),
     }
 
@@ -4909,6 +4959,7 @@ def _payload_from_state() -> dict[str, Any]:
         "days": _span_days(start, end),
         "people": int(snap["people"] or CONSTRAINT_DEFAULTS["people"]),
         "budget": float(snap["budget"] or CONSTRAINT_DEFAULTS["budget"]),
+        "transport_mode": _transport_mode_code(snap.get("transport_mode")),
         "start_date": start.isoformat(),
         "end": end.isoformat(),
         "idea": idea,
@@ -5048,6 +5099,7 @@ AGENT_PAYLOAD_KEYS = (
     "days",
     "people",
     "budget",
+    "transport_mode",
     "start_date",
     "companions",
     "preferences",
@@ -6132,6 +6184,13 @@ def show_result(result: dict[str, Any]) -> None:
     soften_notes = reschedule_conflicts(days)
 
     render_dashboard(result, itinerary, days)
+    long_haul_info = itinerary.get("long_haul") or {}
+    if long_haul_info.get("estimated"):
+        st.caption(
+            f"大交通（{long_haul_info.get('label')}）往返票价按公开区间估算，"
+            f"约 ¥{float(long_haul_info.get('total') or 0):,.0f}，不是实时查询；"
+            "知识库和路线接口都拿不到当日真实票价。"
+        )
     render_adjust_panel()
     render_ai_bubble(itinerary, c)
 
