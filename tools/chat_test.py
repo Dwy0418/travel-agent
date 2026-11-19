@@ -417,6 +417,67 @@ check(over["over"] is True and over["over_by"] == 382,
       "582 > 200 必须标记超预算 ¥382", str(over))
 check(A.agent._sanitize_tips(bug_itin["tips"]) == ["带好身份证。"],
       "带金额的小贴士被删掉，只留文字建议", str(A.agent._sanitize_tips(bug_itin["tips"])))
+check("必须单列一条 type=transport" in A.agent.SYSTEM_PROMPT,
+      "提示词：付费出行必须单列 transport 条目并写 cost",
+      "提示词里没有车费单列要求")
+
+# ¥3000 那单的真实形态：车费只写在景点行的 transport 字段，明细里没有任何交通条目。
+b3000_items = [
+    {"start": "09:00", "end": "10:30", "type": "attraction", "name": "天安门广场",
+     "lng": 116.391, "lat": 39.903, "cost": 0, "transport": "driving", "walk_km": 1.2, "note": "广场平坦"},
+    {"start": "10:45", "end": "12:00", "type": "attraction", "name": "中国国家博物馆",
+     "lng": 116.401, "lat": 39.905, "cost": 0, "transport": "walking", "walk_km": 1.2, "note": ""},
+    {"start": "13:15", "end": "14:45", "type": "food", "name": "大董烤鸭",
+     "lng": 116.410, "lat": 39.910, "cost": 321, "transport": "driving", "walk_km": 0, "note": ""},
+    {"start": "15:00", "end": "16:00", "type": "hotel", "name": "王府井酒店",
+     "lng": 116.410, "lat": 39.910, "cost": 400, "transport": "driving", "walk_km": 0, "note": ""},
+]
+b3000_itin = {
+    "city": "北京市",
+    "summary": "",
+    "days": [{"day": 1, "date": "2026-11-20", "weather_note": "", "items": b3000_items}],
+    "tips": [],
+}
+b3000_cons = A.agent.build_constraints(
+    {"city": "北京市", "days": 1, "people": 3, "budget": 9000, "companions": "带老人"}
+)
+
+
+def _offline_router(name: str, args: dict[str, Any], draft: dict[str, Any] | None = None) -> dict[str, Any]:
+    if name == "plan_route":
+        return {"success": True, "mode": args.get("mode"), "distance_m": 5000,
+                "duration_sec": 900, "cost_yuan": 30, "estimated": False}
+    return {"success": False, "error": "offline"}
+
+
+transport_issues = A.agent.validator.validate(b3000_itin, b3000_cons, router=_offline_router)
+check(any("没有单独的交通花费条目" in one for one in transport_issues),
+      "校验：景点行写了付费出行却没车费条目，要求补车费", "；".join(transport_issues)[:160])
+
+_real_execute = A.tools.execute_tool
+A.tools.execute_tool = _offline_router
+try:
+    _engine = A.agent.TravelAgent(trace_callback=lambda e: None, chat=lambda *a, **k: ({}, {}))
+    _engine.state = {"tool_results_cache": {}, "trace_log": []}
+    _leg_cost, _ = _engine._leg_transport(b3000_itin)
+    _added = A.agent._ensure_transport_items(b3000_itin, _engine.state.get("leg_by_day") or {})
+finally:
+    A.tools.execute_tool = _real_execute
+_b3000_sum = A.tools.summarize_cost(b3000_itin)
+_b3000_item_sum = round(
+    sum(float(one.get("cost") or 0) for d in b3000_itin["days"] for one in d["items"]), 1
+)
+check(_leg_cost > 0 and _added >= 1 and _b3000_sum["breakdown"].get("transport", 0) > 0,
+      "兜底：没有交通条目时补出 transport 花费", f"leg={_leg_cost} added={_added} {_b3000_sum['breakdown']}")
+check(_b3000_sum["total"] == _b3000_item_sum,
+      "兜底：补条目后总额仍等于明细逐项累加", f"total={_b3000_sum['total']} items={_b3000_item_sum}")
+
+_engine2 = A.agent.TravelAgent(trace_callback=lambda e: None, chat=lambda *a, **k: ({}, {}))
+_engine2.state = {"tool_results_cache": {}, "trace_log": []}
+_leg2, _ = _engine2._leg_transport(bug_itin)
+_added2 = A.agent._ensure_transport_items(bug_itin, _engine2.state.get("leg_by_day") or {})
+check(_leg2 == 0 and _added2 == 0,
+      "兜底：已有正常交通条目不重复累加", f"leg={_leg2} added={_added2}")
 
 fake = {
     "status": "ok",

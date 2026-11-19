@@ -37,7 +37,10 @@ SYSTEM_PROMPT = """你是专业的国内旅行规划师，严格遵守以下规�
     写了「想吃 X」至少安排一顿 X 类餐厅（type 填 food / meal，名称或备注写明菜名）；
     写了「想看园林 / 古镇 / 海边」等风格时，优先能直接对上这类景观的景点。
 12. 只给每个条目写单次花费 cost；禁止在 summary / tips / note 里写任何合计、总价、分类小计或人均花费
-    （例如「交通108+餐饮70+住宿20」「总预算约198元」）。合计由程序逐项累加，你不要做任何加减。"""
+    （例如「交通108+餐饮70+住宿20」「总预算约198元」）。合计由程序逐项累加，你不要做任何加减。
+13. 凡是打车 / 网约车 / 自驾 / 包车 / 地铁 / 公交等付费方式产生的车费，必须单列一条 type=transport
+    的条目并写 cost（取 plan_route 返回的 cost_yuan）；景点条目的 transport 字段只表示「怎么到达」，
+    不能代替交通条目。只有全程步行或免费接驳时，才允许没有 transport 条目。"""
 
 OUTPUT_SPEC = """最终回复只允许包含一个 ```json 代码块，结构如下（字段名不得改动、禁止多余文字）：
 {
@@ -138,6 +141,62 @@ def _sanitize_tips(tips: list[Any]) -> list[str]:
         if kept:
             cleaned.append("。".join(kept) + "。")
     return cleaned
+
+
+def _ensure_transport_items(itinerary: dict[str, Any], by_day: dict[int, float]) -> int:
+    """把按天估算的点间车费落回明细条目，返回写入的天数。
+
+    优先写进当天已有的、cost 为 0 的 transport 条目；没有就新增一条交通条目。
+    只有调用方确认「全行程没有任何收费交通条目」时才会传入 by_day，
+    因此不会把模型已经单列的车费重复累加。
+    """
+    added = 0
+    days = itinerary.get("days") or []
+    for day_index, amount in sorted((by_day or {}).items()):
+        try:
+            idx = int(day_index)
+            amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0 or not 0 <= idx < len(days):
+            continue
+        items = days[idx].setdefault("items", [])
+        target = next(
+            (
+                item
+                for item in items
+                if str(item.get("type") or "") == "transport" and _item_cost(item) <= 0
+            ),
+            None,
+        )
+        if target is not None:
+            target["cost"] = round(amount, 1)
+            target["note"] = (str(target.get("note") or "") + " · 按路线估算").strip(" ·")
+        else:
+            stops = [
+                item
+                for item in items
+                if item.get("lng") is not None and item.get("lat") is not None
+            ]
+            ref = stops[-1] if stops else {}
+            items.append(
+                {
+                    "start": "",
+                    "end": "",
+                    "type": "transport",
+                    "name": "市内交通",
+                    "lng": ref.get("lng"),
+                    "lat": ref.get("lat"),
+                    "cost": round(amount, 1),
+                    "indoor": False,
+                    "open_time": "",
+                    "transport": "driving",
+                    "walk_km": 0.0,
+                    "note": "打车/公交按路线估算",
+                }
+            )
+        added += 1
+    return added
 
 
 def build_constraints(raw: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -543,16 +602,21 @@ class TravelAgent:
         """汇总行程内相邻停靠点之间的用车费用，返回 (总额, 明细)。
 
         只在行程没有自带收费交通条目时启用，避免与模型的 transport 条目重复计算。
+        按天累计写入 state["leg_by_day"]，供兜底逻辑把车费落回对应日期的明细条目。
         """
         for day in itinerary.get("days") or []:
             for item in day.get("items") or []:
                 if item.get("type") == "transport" and (self._num(item.get("cost")) or 0) > 0:
+                    self.state["leg_by_day"] = {}
                     return 0.0, []
 
         total = 0.0
         notes: list[str] = []
-        pairs: list[tuple[dict[str, Any], dict[str, Any], str, tuple[Any, Any], tuple[Any, Any]]] = []
-        for day in itinerary.get("days") or []:
+        by_day: dict[int, float] = {}
+        pairs: list[
+            tuple[int, dict[str, Any], dict[str, Any], str, tuple[Any, Any], tuple[Any, Any]]
+        ] = []
+        for day_index, day in enumerate(itinerary.get("days") or []):
             stops = [
                 item
                 for item in (day.get("items") or [])
@@ -567,15 +631,16 @@ class TravelAgent:
                     continue
                 origin = (self._num(prev.get("lng")), self._num(prev.get("lat")))
                 dest = (self._num(cur.get("lng")), self._num(cur.get("lat")))
-                pairs.append((prev, cur, mode, origin, dest))
+                pairs.append((day_index, prev, cur, mode, origin, dest))
 
         routes: list[dict[str, Any] | None] = [
-            self._cached_route(mode, origin, dest) for _, _, mode, origin, dest in pairs
+            self._cached_route(mode, origin, dest)
+            for _, _, _, mode, origin, dest in pairs
         ]
         missing = [(idx, pair) for idx, pair in enumerate(pairs) if routes[idx] is None][:10]
         if missing:
             def fetch(item: tuple[int, tuple[Any, ...]]) -> tuple[int, dict[str, Any]]:
-                idx, (_, _, mode, origin, dest) = item
+                idx, (_, _, _, mode, origin, dest) = item
                 result = self._validate_router(
                     "plan_route",
                     {
@@ -592,14 +657,16 @@ class TravelAgent:
                 for idx, route in pool.map(fetch, missing):
                     routes[idx] = route
 
-        for (prev, cur, _mode, _origin, _dest), route in zip(pairs, routes):
+        for (day_index, prev, cur, _mode, _origin, _dest), route in zip(pairs, routes):
             if not route or not route.get("success"):
                 continue
             cost = self._num(route.get("cost_yuan")) or 0.0
             if cost <= 0:
                 continue
             total += cost
+            by_day[day_index] = round(by_day.get(day_index, 0.0) + cost, 1)
             notes.append(f"{prev.get('name') or '?'}→{cur.get('name') or '?'} {cost:.0f} 元")
+        self.state["leg_by_day"] = by_day if total > 0 else {}
         return round(total, 1), notes
 
     @staticmethod
@@ -951,6 +1018,9 @@ class TravelAgent:
 
             self.state["itinerary_draft"] = parsed
             leg_cost, leg_notes = self._leg_transport(parsed)
+            # 即使最终因校验未通过而停在 max_iterations，也要把最后一稿的估算车费落回明细，
+            # 否则模型漏写 transport 条目时 transport 桶会一直是 0。
+            self.state["leg_transport"] = (leg_cost, leg_notes)
             issues = validator.validate(parsed, c, router=self._validate_router, extra_transport=leg_cost)
             if issues:
                 self._flush_cache_summary()
@@ -1006,18 +1076,14 @@ class TravelAgent:
         itinerary["tips"] = _sanitize_tips(itinerary.get("tips") or [])
         status = "ok" if (itinerary and not issues) else ("max_iterations" if itinerary else "failed")
 
-        # 路线估算的点间交通费要落回明细条目，否则表里看不到、总价却多出一截
+        # 路线估算的点间交通费要落回明细条目，否则表里看不到、总价却多出一截。
+        # 只写当天缺车费的条目；当天没有交通条目就新增一条，避免 transport 桶为 0。
         leg_cost, leg_notes = self.state.get("leg_transport") or (0.0, [])
         if leg_cost > 0:
-            for day in itinerary.get("days") or []:
-                for item in day.get("items") or []:
-                    if str(item.get("type") or "") == "transport" and _item_cost(item) <= 0:
-                        item["cost"] = round(leg_cost, 1)
-                        item["note"] = (str(item.get("note") or "") + " · 按路线估算").strip(" ·")
-                        leg_cost = 0.0
-                        break
-                if leg_cost <= 0:
-                    break
+            by_day = self.state.get("leg_by_day") or {}
+            if not by_day:
+                by_day = {0: leg_cost}
+            _ensure_transport_items(itinerary, by_day)
 
         # 最终花费只认明细逐项累加，不再用日单价公式
         budget = tools.summarize_cost(itinerary)

@@ -175,7 +175,11 @@ GOOD_PLAN = itinerary(
             START,
             [
                 item("中国客家博物馆", "09:00", "11:00", 0, outdoor=False),
+                item("打车去客家美术馆", "11:00", "11:20", 30, kind="transport"),
+                item("客家午餐", "11:30", "12:30", 60, kind="food", outdoor=False),
+                item("午间休息", "12:30", "13:15", 0, kind="rest", outdoor=False),
                 item("客家美术馆", "13:30", "15:30", 20, outdoor=False),
+                item("客家酒店", "16:00", "16:30", 200, kind="hotel", outdoor=False),
             ],
         ),
         day(
@@ -183,7 +187,10 @@ GOOD_PLAN = itinerary(
             D2,
             [
                 item("雁南飞茶田", "09:00", "10:30", 60),
-                item("客家公园", "13:00", "14:30", 0),
+                item("打车去客家公园", "10:40", "11:00", 30, kind="transport"),
+                item("客家午餐", "11:30", "12:30", 60, kind="food", outdoor=False),
+                item("午间休息", "12:30", "13:15", 0, kind="rest", outdoor=False),
+                item("客家公园", "13:30", "14:30", 0),
             ],
         ),
     ]
@@ -566,10 +573,15 @@ def test_zh_labels() -> None:
         zh_labels.friendly_error("INVALID_USER_KEY"),
     )
     rows = zh_labels.plan_rows(GOOD_PLAN)
+    kinds = {row["类型"] for row in rows}
+    transports = {row["交通"] for row in rows}
     check(
         "显示层：行程表类型/交通列中文",
-        bool(rows) and all(row["类型"] == "景点" and row["交通"] == "驾车" for row in rows),
-        str(rows[0] if rows else {}),
+        bool(rows)
+        and {"景点", "交通接驳"} <= kinds
+        and all("attraction" not in kind and "transport" not in kind for kind in kinds)
+        and all("driving" not in move and "transit" not in move for move in transports),
+        str(rows[:3]),
     )
     budget_rows = zh_labels.budget_rows({"ticket": 110, "transport": 30, "food": 600, "hotel": 200})
     check(
@@ -645,18 +657,28 @@ def test_ui_apptest() -> None:
         page_app = AppTest.from_file(page, default_timeout=90).run()
         check("界面：首屏无异常", not page_app.exception, str([e.value for e in page_app.exception]))
         check("界面：缺少 Key 时给出提示", any("缺少密钥" in w.value for w in page_app.warning))
+        seed_md = " ".join(str(one.value) for one in page_app.markdown)
         check(
             "界面：标题与副标题已中文化",
-            any("智能体" in title.value for title in page_app.title)
-            and all("DeepSeek" not in caption.value for caption in page_app.caption),
-            str([t.value for t in page_app.title]),
+            "旅游规划助手" in seed_md
+            and all("DeepSeek" not in str(caption.value) for caption in page_app.caption),
+            seed_md[:120],
         )
 
-        page_app.button[0].click().run()
+        start = next((b for b in page_app.button if "开始规划" in str(b.label)), None)
+        check("界面：首页保留「开始规划」按钮", start is not None, str([b.label for b in page_app.button])[:120])
+        if start is not None:
+            start.click().run()
+        hint_md = " ".join(str(one.value) for one in page_app.markdown)
+        # 前置校验在点按钮的这一轮直接画提示，不写 _run_now、不发请求，
+        # 所以既不该有异常，也不该出现后端报错。
         check(
-            "界面：无 Key 点击后不白屏",
-            not page_app.exception and bool(page_app.error),
-            str([e.value for e in page_app.error]),
+            "界面：缺必填项时只提示不白屏",
+            not page_app.exception
+            and not page_app.error
+            and "还差" in hint_md
+            and "目的地" in hint_md,
+            f"exception={page_app.exception} error={[e.value for e in page_app.error]}",
         )
     finally:
         config.DEEPSEEK_API_KEY, config.AMAP_KEY = real_keys
@@ -671,35 +693,48 @@ def test_ui_apptest() -> None:
         "issues": [],
         "constraints": cons,
         "itinerary": GOOD_PLAN,
-        "budget": tools.estimate_budget(GOOD_PLAN, cons["days"], cons["people"]),
+        "budget": tools.apply_cap(tools.summarize_cost(GOOD_PLAN), float(cons["budget"])),
         "trace": [{"kind": "decision", "line": "【第 1 轮】模型决策：调用 1 个工具（地点检索）"}],
     }
     result["markdown"] = agent.render_markdown(result)
-    page_app.session_state["result"] = result
-    page_app.run()
-    check("界面：行程渲染无异常", not page_app.exception, str([e.value for e in page_app.exception]))
-    check("界面：行程表与预算表都渲染", len(page_app.dataframe) >= 2, f"{len(page_app.dataframe)} 个表格")
+
+    # 结果页单独开一个 AppTest：上一个实例点过卡片「看详情」，会留下 _open_detail；
+    # 再注入 result 会让详情弹窗和结果页调整面板同时渲染出发地控件。生产路径在开跑时
+    # 会清掉 _open_detail，结果页也没有打开详情的入口，所以这里不复用那个实例。
+    result_app = AppTest.from_file(page, default_timeout=90).run()
+    result_app.session_state["result"] = result
+    result_app.run()
+    check("界面：行程渲染无异常", not result_app.exception, str([e.value for e in result_app.exception]))
+
+    md = " ".join(str(one.value) for one in result_app.markdown)
+    check(
+        "界面：行程表与预算表都渲染",
+        "itn-table" in md
+        and all(head in md for head in ("时间", "安排", "交通方式", "花费", "贴心提示"))
+        and "预算使用情况" in md,
+        md[:160],
+    )
     check(
         "界面：顶部只保留 3 个指标卡",
-        [m.label for m in page_app.metric][:3] == ["状态", "总预算（元）", "耗时（秒）"],
-        str([m.label for m in page_app.metric]),
+        all(
+            f"<div class='dash-label'>{label}</div>" in md
+            for label in ("目的地", "天气", "预估花费")
+        )
+        and "耗时" not in md
+        and not result_app.metric,
+        str([m.label for m in result_app.metric]),
     )
     check(
         "界面：表格类型/交通列全中文",
-        all(
-            "attraction" not in str(cell) and "driving" not in str(cell)
-            for cell in page_app.dataframe[0].value["类型"].tolist() + page_app.dataframe[0].value["交通"].tolist()
-        ),
-        str(page_app.dataframe[0].value.head(1).to_dict("records")),
+        "attraction" not in md and "driving" not in md,
+        "存在英文枚举值" if "attraction" in md or "driving" in md else "中文",
     )
-    labels = [str(expander.label) for expander in page_app.expander]
     check(
-        "界面：执行过程与折叠区文案已中文化",
-        any(label.startswith("执行过程") for label in labels)
-        and any("结构化数据" in label for label in labels)
-        and not any("Trace" in label or "JSON" in label for label in labels)
-        and any("下载行程单" in str(button.label) for button in page_app.download_button),
-        str(labels),
+        "界面：结果页提供 PDF 下载且不再展示英文折叠区",
+        any("行程单" in str(button.label) for button in result_app.download_button)
+        and "Trace" not in md
+        and "结构化数据" not in md,
+        str([button.label for button in result_app.download_button]),
     )
 
 
@@ -790,6 +825,58 @@ def test_leg_transport() -> None:
     engine.state = {"tool_results_cache": {}, "trace_log": []}
     cost2, notes2 = engine._leg_transport(plan_with_item)
     check("交通费补算：已有收费交通条目不重复累加", cost2 == 0 and not notes2, f"cost={cost2} notes={notes2}")
+    check(
+        "交通费补算：已有收费条目时兜底不再追加",
+        agent._ensure_transport_items(plan_with_item, engine.state.get("leg_by_day") or {}) == 0,
+        str(engine.state.get("leg_by_day")),
+    )
+
+    # 回归：模型只在景点行写 transport="driving"、金额完全没出现（¥3000 那单的真实形态）。
+    missing_entry = itinerary(
+        [
+            day(
+                1,
+                START,
+                [
+                    item("中国客家博物馆", "09:00", "11:00", 0, outdoor=False),
+                    item("客家美术馆", "13:30", "15:30", 20, outdoor=False),
+                ],
+            )
+        ]
+    )
+    missing_entry["days"][0]["items"][1]["transport"] = "driving"
+    issues_missing = issues_of(missing_entry, constraints(days=1, budget=10000))
+    check(
+        "交通费校验：景点行写了付费出行却没有车费条目，被要求补车费",
+        has_issue(issues_missing, "没有单独的交通花费条目"),
+        "；".join(issues_missing)[:160],
+    )
+
+    engine.state = {"tool_results_cache": {}, "trace_log": []}
+    cost4, notes4 = engine._leg_transport(missing_entry)
+    added = agent._ensure_transport_items(missing_entry, engine.state.get("leg_by_day") or {})
+    summary = tools.summarize_cost(missing_entry)
+    item_sum = round(
+        sum(float(one.get("cost") or 0) for d in missing_entry["days"] for one in d["items"]), 1
+    )
+    check(
+        "交通费兜底：没有交通条目时补出 transport 花费",
+        cost4 > 0 and added == 1 and summary["breakdown"].get("transport", 0) > 0,
+        f"cost={cost4} added={added} breakdown={summary['breakdown']}",
+    )
+    check(
+        "交通费兜底：补条目后总额仍等于明细逐项累加",
+        summary["total"] == item_sum,
+        f"total={summary['total']} item_sum={item_sum}",
+    )
+    check(
+        "交通费兜底：新增条目写回对应日期且带说明",
+        any(
+            one.get("type") == "transport" and one.get("cost") == 30 and "路线估算" in str(one.get("note"))
+            for one in missing_entry["days"][0]["items"]
+        ),
+        str(missing_entry["days"][0]["items"][-1]),
+    )
 
     engine.state = {"tool_results_cache": {}, "trace_log": []}
     walking_plan = itinerary(

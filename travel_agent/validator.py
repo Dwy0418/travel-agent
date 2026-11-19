@@ -375,15 +375,33 @@ def validate(
                 str(item.get("type") or "") == "hotel" and _item_cost(item) > 0 for item in items
             ):
                 issues.append(f"{label}需要过夜却没有住宿花费，请补一条带 cost 的住宿")
+            paid_entry = False
+            paid_mode = False
+            zero_cost_paid = False
+            stop_seen = 0
             for item in items:
-                if str(item.get("type") or "") != "transport" or _item_cost(item) > 0:
-                    continue
+                kind = str(item.get("type") or "")
                 text = f"{item.get('name') or ''} {item.get('note') or ''}"
-                if any(word in text for word in PAID_TRANSPORT_WORDS):
-                    issues.append(
-                        f"{label}的「{item.get('name') or '交通'}」是付费交通却没有写 cost，"
-                        "请按实际车费补上（打车/地铁/公交也要写金额）"
-                    )
+                if kind == "transport":
+                    if _item_cost(item) > 0:
+                        paid_entry = True
+                    elif any(word in text for word in PAID_TRANSPORT_WORDS):
+                        zero_cost_paid = True
+                    continue
+                # 第一个停靠点是当天起点，不产生市内车费；从第二个起才看「怎么到达」。
+                if (
+                    kind in ("attraction", "food", "hotel")
+                    and item.get("lng") is not None
+                    and item.get("lat") is not None
+                ):
+                    stop_seen += 1
+                    if stop_seen > 1 and str(item.get("transport") or "") in ("driving", "transit"):
+                        paid_mode = True
+            if not paid_entry and (paid_mode or zero_cost_paid):
+                issues.append(
+                    f"{label}的交通方式包含付费出行（打车 / 公交 / 自驾等），但没有单独的交通花费条目；"
+                    "请补一条 type=transport 且 cost 为正数的车费条目（金额取 plan_route 返回的车费）"
+                )
 
     # 全维度约束校验：避雷 / 硬需求 / 美食，都是「说了就必须在点位上看得到」
     all_attrs = [
