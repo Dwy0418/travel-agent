@@ -178,6 +178,9 @@ def validate(
     if expect and len(days) != expect:
         issues.append(f"行程共 {len(days)} 天，与用户要求的 {expect} 天不一致，请补齐或裁剪")
 
+    # 同城不该有「大交通」：模型经常把「去程：北京市→北京市（高铁）」写成一条 ¥830 的交通，
+    # 距离 0 被当成 800+ 公里的票价，预算直接被拉高一半。
+    issues.extend(_same_city_transport_issues(itinerary, constraints))
     weather = weather_map(itinerary, constraints, router)
     companion_text = " ".join(constraints.get("companions") or [])
     elder = any(word in companion_text for word in ELDER_WORDS)
@@ -491,4 +494,52 @@ def validate(
                 f"{transport:.0f} + 餐饮 {float(parts.get('food') or 0):.0f} + 住宿 {float(parts.get('hotel') or 0):.0f}），"
                 f"超过用户设定的 {float(budget):.0f} 元预算，请减少收费景点或调整交通/住宿标准"
             )
+    return issues
+
+
+def _same_city_transport_issues(itinerary: dict[str, Any], constraints: dict[str, Any]) -> list[str]:
+    """返回「同城大交通」相关问题；没有就返回空列表。
+
+    判定两条：
+    1. 交通条目名字里出现「A→B」且 A、B 是同一座城（去掉「市」再比），说明模型把市内交通
+       当成了跨城高铁，票价与时长都会离谱；
+    2. 名字里直接写「大交通」这类汇总条目，属于把多段并成一条，无法核对金额。
+    """
+    origin = str(constraints.get("origin") or "").strip()
+    city = str(constraints.get("city") or "").strip()
+    same_city = bool(origin) and bool(city) and origin == city
+    issues: list[str] = []
+    seen: set[str] = set()
+
+    def norm(name: str) -> str:
+        return str(name or "").replace("市", "").strip()
+
+    for day in itinerary.get("days") or []:
+        for item in day.get("items") or []:
+            if item.get("type") != "transport":
+                continue
+            name = str(item.get("name") or "")
+            if not name or name in seen:
+                continue
+            m = re.search(r"([\u4e00-\u9fa5]{2,10})\s*→\s*([\u4e00-\u9fa5]{2,10})", name)
+            if m and norm(m.group(1)) == norm(m.group(2)):
+                seen.add(name)
+                issues.append(
+                    f"交通条目「{name}」写的是同城（{m.group(1)}→{m.group(2)}），不是跨城大交通；"
+                    "同城请删掉这条，只保留市内地铁/公交/打车，金额取 plan_route 结果。"
+                )
+            elif "大交通" in name:
+                seen.add(name)
+                issues.append(
+                    f"交通条目「{name}」把多段并成了一条，无法核对金额；请拆成具体的去程/返程或市内交通条目。"
+                )
+    if same_city and not issues:
+        for day in itinerary.get("days") or []:
+            for item in day.get("items") or []:
+                if item.get("type") == "transport" and float(item.get("cost") or 0) >= 300:
+                    issues.append(
+                        f"出发地与目的地都是 {city}，但交通条目「{item.get('name') or '未命名'}」"
+                        f"花了 {float(item.get('cost') or 0):.0f} 元；同城不该有跨城票价，请改成市内交通。"
+                    )
+                    break
     return issues

@@ -2664,10 +2664,33 @@ window.CI_GEO = {"chengduCore":{"type":"FeatureCollection","features":[{"type":"
     root.meta.title = city + ' · 本次行程';
     root.meta.subtitle = [a.days ? a.days + ' 天' : '', a.people ? a.people + ' 人' : '']
       .filter(Boolean).join(' · ');
-    root.meta.dateRange = clean[0].time || root.meta.dateRange;
+    root.meta.dateRange = a.dateRange || clean[0].time || root.meta.dateRange;
     root.route.dest.name = city;
     root.route.dest.sub = '本次行程落点';
     root.route.dest.lngLat = [cx, cy];
+
+    // 出发地 / 距离 / 时长：以前这三样一直是内置的「北京 → 成都 1,510 km」，
+    // 北京本地或广州行程都照念成都。现在有 payload 就用 payload，没有就留空。
+    var originName = a.originName || a.origin || '';
+    if (originName) {
+      root.route.origin.name = originName;
+      root.route.origin.sub = a.originSub || '出发地';
+    }
+    if (a.distance) root.meta.distance = a.distance;
+    if (a.duration) root.meta.duration = a.duration;
+    if (a.coordText) {
+      var hint = document.getElementById('province-hint');
+      if (hint) hint.textContent = a.coordText;
+    }
+    if (Array.isArray(a.captions) && a.captions.length === 3) {
+      var spans = document.querySelectorAll('#captions .caption');
+      for (var ci = 0; ci < spans.length && ci < 3; ci++) {
+        var pair = a.captions[ci];
+        if (pair && pair.length === 2) {
+          spans[ci].innerHTML = '<b>' + pair[0] + '</b> · ' + pair[1];
+        }
+      }
+    }
     return true;
   }
 

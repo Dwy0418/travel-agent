@@ -6268,6 +6268,94 @@ def show_result(result: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+_ORIGIN_CENTER_CACHE = {}
+
+
+def _city_center(name):
+    """城市中心坐标（GCJ-02）。先查进程内缓存，再走高德 geocode，取不到就 None。"""
+    key = str(name or "").strip()
+    if not key:
+        return None
+    if key in _ORIGIN_CENTER_CACHE:
+        return _ORIGIN_CENTER_CACHE[key]
+    center = None
+    try:
+        geo = tools.geocode(key) or {}
+        lng, lat = geo.get("lng"), geo.get("lat")
+        if isinstance(lng, (int, float)) and isinstance(lat, (int, float)):
+            center = (float(lng), float(lat))
+    except Exception:
+        center = None
+    _ORIGIN_CENTER_CACHE[key] = center
+    return center
+
+
+def _intro_meta(result, pois):
+    """片头要的出发地 / 距离 / 时长 / 日期 / 字幕 / 坐标，全部按本次真实 constraints 现算。
+
+    宁可留空也不用内置的成都示例值——之前片头写死「北京 → 成都 1,510 公里」，
+    北京本地的行程也照念成都，面试演示一眼就露。
+    """
+    c = result.get("constraints") or {}
+    origin = str(st.session_state.get("f_origin") or ORIGIN_DEFAULT)
+    city = str(c.get("city") or "")
+    days = int(c.get("days") or 0)
+    people = int(c.get("people") or 0)
+
+    dest = None
+    if pois:
+        lngs = [float(p["lng"]) for p in pois]
+        lats = [float(p["lat"]) for p in pois]
+        dest = (sum(lngs) / len(lngs), sum(lats) / len(lats))
+    if dest is None and city:
+        dest = _city_center(city)
+
+    same_city = bool(origin) and bool(city) and origin == city
+    distance_text = ""
+    duration_text = ""
+    if same_city:
+        distance_text = "同城 · 市内交通"
+        duration_text = "不赶路"
+    else:
+        origin_pt = _city_center(origin)
+        if origin_pt and dest:
+            km = tools.haversine_m(origin_pt[0], origin_pt[1], dest[0], dest[1]) / 1000
+            distance_text = "{:,.0f} km".format(km)
+            # 高铁口径：250km/h + 40 分钟进出站，只做片头观感，不作为票价依据
+            minutes = km / 250 * 60 + 40
+            duration_text = "{} 小时 {:02d} 分".format(int(minutes // 60), int(minutes % 60))
+
+    d1 = st.session_state.get("f_start")
+    d2 = st.session_state.get("f_end")
+    date_range = ""
+    if isinstance(d1, date) and isinstance(d2, date):
+        date_range = "{} 月 {} 日 — {} 月 {} 日".format(d1.month, d1.day, d2.month, d2.day)
+
+    coord_text = "N {:.2f}°. E {:.2f}°".format(dest[1], dest[0]) if dest else ""
+    if same_city:
+        captions = [
+            ["第一幕 · 出发", "就在 {}，不赶路".format(city)],
+            ["第二幕 · 抵达", "落到 {}".format(city)],
+            ["第三幕 · 铺开", "红色地界内为本次行程范围"],
+        ]
+    else:
+        captions = [
+            ["第一幕 · 航线", "{} → {} · {}".format(origin, city, distance_text)],
+            ["第二幕 · 下降", "穿越云层，目视 {}".format(city)],
+            ["第三幕 · 抵达", "红色地界内为本次行程范围"],
+        ]
+    return {
+        "origin": origin,
+        "city": city,
+        "days": days,
+        "people": people,
+        "distance": distance_text,
+        "duration": duration_text,
+        "dateRange": date_range,
+        "coordText": coord_text,
+        "captions": captions,
+    }
+
 def _intro_pois(result: dict[str, Any]) -> list[dict[str, Any]]:
     """把 itinerary.days 里的「游玩」条目拍平成片头要的 POI 列表。
 
@@ -6332,16 +6420,22 @@ def _play_intro(result: dict[str, Any]) -> dict[str, Any] | None:
     # 真实行程 -> 片头点位：没有可用的景点（规划失败 / 缺高德 Key）时传空列表，
     # 组件会立刻退回内置示例，不会白屏。
     pois = _intro_pois(result)
-    event = map_intro(
-        key="plan_intro",
-        payload={
-            "origin": str(st.session_state.get("f_origin") or ORIGIN_DEFAULT),
-            "city": str(c.get("city") or ""),
-            "days": int(c.get("days") or 0),
-            "people": int(c.get("people") or 0),
-            "pois": pois,
-        },
-    )
+    meta = _intro_meta(result, pois)
+    payload = {
+        "origin": meta["origin"],
+        "originName": meta["origin"],
+        "originSub": "出发地",
+        "city": meta["city"],
+        "days": meta["days"],
+        "people": meta["people"],
+        "distance": meta["distance"],
+        "duration": meta["duration"],
+        "dateRange": meta["dateRange"],
+        "coordText": meta["coordText"],
+        "captions": meta["captions"],
+        "pois": pois,
+    }
+    event = map_intro(key="plan_intro", payload=payload)
     if event and event != previous:
         st.session_state["_intro_result"] = event
     return event

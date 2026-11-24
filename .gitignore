@@ -5,3 +5,5 @@ __pycache__/
 logs/
 *.md.bak
 .streamlit/secrets.toml
+
+*.bak-*
