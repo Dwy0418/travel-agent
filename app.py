@@ -6331,10 +6331,10 @@ def _intro_meta(result, pois):
     if isinstance(d1, date) and isinstance(d2, date):
         date_range = "{} 月 {} 日 — {} 月 {} 日".format(d1.month, d1.day, d2.month, d2.day)
 
-    coord_text = "N {:.2f}°. E {:.2f}°".format(dest[1], dest[0]) if dest else ""
+    coord_text = "N {:.2f}° · E {:.2f}°".format(dest[1], dest[0]) if dest else ""
     if same_city:
         captions = [
-            ["第一幕 · 出发", "就在 {}，不赶路".format(city)],
+            ["第一幕 · 出发", "就在{}，不赶路".format(city)],
             ["第二幕 · 抵达", "落到 {}".format(city)],
             ["第三幕 · 铺开", "红色地界内为本次行程范围"],
         ]
