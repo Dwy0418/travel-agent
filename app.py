@@ -21,7 +21,7 @@ from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import streamlit as st
 import streamlit.components.v1 as st_components
@@ -3788,7 +3788,7 @@ def _card_face(preset: dict[str, Any], slot: int, delay: int | None = None) -> s
     if budget:
         per = budget / people if people else budget
         label = "人均" if people > 1 else "预算"
-        meta += f" · {label} <span class='pc-price'>¥{per:,.0f}</span>"
+        meta += f" · {label} <span class='pc-price'>参考 ¥{per:,.0f}</span>"
     return (
         f"<div class='pc-face pc-face-{slot}' data-bg=\"{escape(_cover_url(preset['img']), quote=True)}\" "
         f"style='animation-delay:{(slot if delay is None else delay) * 60}ms'>"
@@ -3810,7 +3810,7 @@ def _related_face(preset: dict[str, Any], slot: int) -> str:
     days = int(payload.get("days") or 0)
     people = int(payload.get("people") or 0)
     budget = float(payload.get("budget") or 0)
-    price = f"　·　<span class='pc-price'>人均 ¥{budget / people:,.0f}</span>" if people and budget else ""
+    price = f"　·　<span class='pc-price'>参考人均 ¥{budget / people:,.0f}</span>" if people and budget else ""
     return (
         f"<div class='pc-rel' style=\"animation-delay:{slot * 60}ms;"
         f"background-image:url('{preset['img']}')\">"
@@ -5766,12 +5766,16 @@ def _nav_anchor(item: dict[str, Any]) -> str:
 
 
 def _weather_temp(note: str) -> str:
-    """从天气描述里抠出温度，如「15-20℃」「18°C」；抠不到就留空，绝不编造。"""
+    """从天气描述里抠出温度，如「15-20℃」「18°C」；抠不到就留空，绝不编造。
+
+    允许小数与「度」：模型常写「-2.4~7.5℃」，旧的整数正则匹配不到，
+    整句会留成「晴，-2.4~7.，适合户外广场拍照」这种截断样。
+    """
     text = note or ""
-    span = re.search(r"(-?\d+)\s*[~～\-—至]\s*(-?\d+)", text)
+    span = re.search(r"(-?\d+(?:\.\d+)?)\s*[~～\-—至]\s*(-?\d+(?:\.\d+)?)", text)
     if span:
         return f"{span.group(1)}~{span.group(2)}℃"
-    single = re.search(r"(-?\d+)\s*(?:℃|°C)", text)
+    single = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:℃|°C|度)", text)
     if single:
         return f"{single.group(1)}℃"
     return ""
@@ -5884,8 +5888,8 @@ def _first_weather(days: list[dict[str, Any]]) -> tuple[str, str]:
 def _weather_desc(note: str) -> str:
     """去掉温度后的天气描述，避免与看板上的温度重复。"""
     text = (note or "").strip()
-    text = re.sub(r"(-?\d+)\s*[~～\-—至]\s*(-?\d+)\s*(?:℃|°C)", "", text)
-    text = re.sub(r"(-?\d+)\s*(?:℃|°C)", "", text)
+    text = re.sub(r"(-?\d+(?:\.\d+)?)\s*[~～\-—至]\s*(-?\d+(?:\.\d+)?)\s*(?:℃|°C|度)", "", text)
+    text = re.sub(r"(-?\d+(?:\.\d+)?)\s*(?:℃|°C|度)", "", text)
     text = re.sub(r"[，,、\s]{2,}", " ", text).strip(" ，,、")
     return text
 
@@ -6158,6 +6162,58 @@ def render_itinerary_table(days: list[dict[str, Any]]) -> None:
     )
 
 
+_APP_SHARE_URL = "https://travel-agent-nryambj4o8dl9pkafgzgjs.streamlit.app/"
+
+
+def _share_params(c: dict[str, Any]) -> dict[str, str]:
+    """把「能复现这次行程」的字段压成 query 参数。"""
+    params: dict[str, str] = {"share": "1"}
+    for key, name in (("origin", "origin"), ("city", "city"), ("days", "days"), ("people", "people")):
+        value = c.get(key)
+        if value in (None, "", 0):
+            continue
+        params[name] = str(value)
+    for key, name in (("start_date", "start"), ("end_date", "end")):
+        value = c.get(key)
+        if value:
+            params[name] = str(value)
+    return params
+
+
+def _share_url(c: dict[str, Any]) -> str:
+    return _APP_SHARE_URL + "?" + urlencode(_share_params(c))
+
+
+def apply_share_params() -> None:
+    """打开分享链接时，把 query 里的条件回填成待应用的约束（只做一次）。"""
+    try:
+        params = dict(st.query_params)
+    except Exception:
+        return
+    if not params or params.pop("share", None) in (None, "", "0"):
+        return
+    if st.session_state.get("_share_applied"):
+        return
+    st.session_state["_share_applied"] = True
+    payload: dict[str, Any] = {}
+    for key in ("origin", "city"):
+        if params.get(key):
+            payload[key] = str(params[key])
+    for key in ("days", "people"):
+        if params.get(key):
+            try:
+                payload[key] = int(params[key])
+            except (TypeError, ValueError):
+                pass
+    for key in ("start", "end"):
+        if params.get(key):
+            try:
+                payload[key] = date.fromisoformat(str(params[key]))
+            except (TypeError, ValueError):
+                pass
+    if payload:
+        st.session_state["_pending_constraints"] = payload
+
 def show_result(result: dict[str, Any]) -> None:
     c = result["constraints"]
     itinerary = result["itinerary"]
@@ -6174,6 +6230,11 @@ def show_result(result: dict[str, Any]) -> None:
     # 详情页左上角：清掉这次行程直接回首页空态
     if st.button("← 返回首页", key="result_home"):
         _go_home()
+
+    # 分享链接：把能复现这次行程的条件压进 query，面试/发给同学都能一键回到同一份
+    with st.expander("🔗 分享这次行程", expanded=False):
+        st.code(_share_url(c), language="text")
+        st.caption("复制这个链接发给别人，打开就是同样的出发地、天数、人数与日期。")
 
     # 大纲到终稿如果有差异，明确告诉用户改了什么，而不是静默替换
     diff_note = st.session_state.get("_outline_diff_note")
@@ -6443,6 +6504,7 @@ def _play_intro(result: dict[str, Any]) -> dict[str, Any] | None:
 
 def main() -> None:
     setup_detail_log()
+    apply_share_params()
     apply_pending_constraints()
     apply_pending_preset()
 
